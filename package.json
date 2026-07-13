@@ -1,0 +1,16 @@
+{
+  "name": "dalong-tool-hub",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^37.10.3"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.18"
+  }
+}
