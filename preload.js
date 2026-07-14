@@ -1,8 +1,9 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 contextBridge.exposeInMainWorld('desktopWindow', {
   minimize: () => ipcRenderer.send('window:minimize'),
   maximizeToggle: () => ipcRenderer.send('window:maximize-toggle'),
+  alwaysOnTopToggle: () => ipcRenderer.invoke('window:always-on-top-toggle'),
   close: () => ipcRenderer.send('window:close'),
 })
 
@@ -23,6 +24,14 @@ contextBridge.exposeInMainWorld('settingsBridge', {
 
 contextBridge.exposeInMainWorld('libraryBridge', {
   getBlueprints: () => ipcRenderer.invoke('library:get-blueprints'),
+  getAssets: (type) => ipcRenderer.invoke('library:get-assets', type),
+  addAssetFolder: (type) => ipcRenderer.invoke('library:add-asset-folder', type),
+  openAssetRoot: (type) => ipcRenderer.invoke('library:open-asset-root', type),
+  renameAsset: (data) => ipcRenderer.invoke('library:rename-asset', data),
+  deleteAsset: (data) => ipcRenderer.invoke('library:delete-asset', data),
+  createAsset: (data) => ipcRenderer.invoke('library:create-asset', data),
+  chooseAssetFile: (kind) => ipcRenderer.invoke('library:choose-asset-file', kind),
+  filePath: (file) => webUtils.getPathForFile(file),
   prepareImport: (data) => ipcRenderer.invoke('library:prepare-import', data),
   executeImport: (data) => ipcRenderer.invoke('library:execute-import', data),
   cancelImport: (data) => ipcRenderer.invoke('library:cancel-import', data),

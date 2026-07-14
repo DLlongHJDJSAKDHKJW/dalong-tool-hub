@@ -21,11 +21,6 @@ const mediaCards = {
     { duration: "00:09", name: "性能工具", tone: "silver" },
     { duration: "00:07", name: "打包插件", tone: "smoke" },
   ],
-  animation: [
-    { duration: "00:05", name: "待机动画", tone: "silver" },
-    { duration: "00:08", name: "冲刺动画", tone: "smoke" },
-    { duration: "00:06", name: "攻击动画", tone: "graphite" },
-  ],
 };
 
 const pageMeta = {
@@ -33,9 +28,14 @@ const pageMeta = {
   blueprint: { title: "蓝图", subtitle: "卡片预览与导入" },
   material: { title: "材质", subtitle: "卡片预览与导入" },
   plugin: { title: "插件", subtitle: "卡片预览与导入" },
-  animation: { title: "动画", subtitle: "卡片预览与导入" },
+  script: { title: "脚本", subtitle: "卡片预览与导入" },
+  node: { title: "节点", subtitle: "卡片预览与导入" },
+  project: { title: "工程", subtitle: "卡片预览与导入" },
   settings: { title: "设置", subtitle: "软件参数与路径" },
 };
+
+const assetPageKeys = ["blueprint", "material", "plugin", "script", "node", "project"];
+const optionalModuleIds = ["ae", "3dmax", "blender", "c4d", "maya", "ps"];
 
 const engines = [
   {
@@ -45,16 +45,34 @@ const engines = [
     status: "connected",
     subtitle: "虚幻引擎资源库",
     pages: [
-      { id: "home", label: "概览", icon: "home" },
+      { id: "home", label: "概述", icon: "home" },
       { id: "blueprint", label: "蓝图", icon: "blueprint" },
       { id: "material", label: "材质", icon: "grid" },
       { id: "plugin", label: "插件", icon: "plug" },
-      { id: "animation", label: "动画", icon: "film" },
+      { id: "script", label: "脚本", icon: "film" },
+      { id: "node", label: "节点", icon: "grid" },
+      { id: "project", label: "工程", icon: "home" },
     ],
   },
   {
+    id: "ae",
+    name: "AE",
+    shortName: "AE",
+    status: "pending",
+    subtitle: "待接入",
+    pages: [],
+  },
+  {
+    id: "3dmax",
+    name: "3Dmax",
+    shortName: "3D",
+    status: "planned",
+    subtitle: "规划中",
+    pages: [],
+  },
+  {
     id: "blender",
-    name: "Blender",
+    name: "blender",
     shortName: "Bl",
     status: "pending",
     subtitle: "待接入",
@@ -70,8 +88,24 @@ const engines = [
   },
   {
     id: "ai",
-    name: "AI 工具",
+    name: "AI工具",
     shortName: "AI",
+    status: "planned",
+    subtitle: "规划中",
+    pages: [],
+  },
+  {
+    id: "maya",
+    name: "MAYA",
+    shortName: "MY",
+    status: "planned",
+    subtitle: "规划中",
+    pages: [],
+  },
+  {
+    id: "ps",
+    name: "PS",
+    shortName: "PS",
     status: "planned",
     subtitle: "规划中",
     pages: [],
@@ -80,6 +114,11 @@ const engines = [
 
 function activeEngine() {
   return engines.find((e) => e.id === state.activeEngine) || engines[0];
+}
+
+function visibleEngines() {
+  const visibleModules = Array.isArray(state.settings.visibleModules) ? state.settings.visibleModules : optionalModuleIds;
+  return engines.filter((engine) => engine.id === "unreal" || engine.id === "ai" || visibleModules.includes(engine.id));
 }
 
 function isEngineConnected(engineId) {
@@ -91,12 +130,15 @@ const state = {
   activePage: "home",
   activeEngine: "unreal",
   activeProjectPath: "",
+  alwaysOnTop: false,
   columns: 5,
   activeCardIndexByPage: {
     blueprint: 0,
     material: 0,
     plugin: 0,
-    animation: 0,
+    script: 0,
+    node: 0,
+    project: 0,
   },
   previewModal: {
     open: false,
@@ -114,6 +156,8 @@ const state = {
     cornerRadius: 28,
     motionStrength: "normal",
     visibleOnlyPlayback: true,
+    showLibraryRootPath: true,
+    visibleModules: [...optionalModuleIds],
     directory: {
       exists: false,
       fileCount: 0,
@@ -128,6 +172,8 @@ const state = {
     cornerRadius: 28,
     motionStrength: "normal",
     visibleOnlyPlayback: true,
+    showLibraryRootPath: true,
+    visibleModules: [...optionalModuleIds],
   },
   settingsMessage: "设置资源根目录后，软件就可以读取这个路径下的文件。",
   importState: {
@@ -155,15 +201,34 @@ const state = {
     item: null,
     pageKey: "",
   },
+  deleteConfirm: {
+    open: false,
+    item: null,
+    pageKey: "",
+    loading: false,
+    message: "",
+  },
+  assetCreate: {
+    open: false,
+    pageKey: "",
+    name: "",
+    video: null,
+    package: null,
+    loading: false,
+    message: "",
+  },
   toast: {
     visible: false,
     message: "",
     type: "info",
   },
-  blueprintLibrary: {
-    items: [],
-    message: "正在读取蓝图资源目录...",
-    libraryRoot: "",
+  assetLibraries: {
+    blueprint: { items: [], message: "正在读取蓝图资源目录...", libraryRoot: "", label: "蓝图" },
+    material: { items: [], message: "正在读取材质资源目录...", libraryRoot: "", label: "材质" },
+    plugin: { items: [], message: "正在读取插件资源目录...", libraryRoot: "", label: "插件" },
+    script: { items: [], message: "正在读取脚本资源目录...", libraryRoot: "", label: "脚本" },
+    node: { items: [], message: "正在读取节点资源目录...", libraryRoot: "", label: "节点" },
+    project: { items: [], message: "正在读取工程资源目录...", libraryRoot: "", label: "工程" },
   },
 };
 
@@ -215,6 +280,10 @@ function safeProjectName(project) {
   return project?.name || "未选择项目";
 }
 
+function assetLibrary(pageKey) {
+  return state.assetLibraries?.[pageKey] || { items: [], message: "", libraryRoot: "", label: pageMeta[pageKey]?.title || "资源" };
+}
+
 function navButton(page, label, icon, active = false) {
   return `
     <button class="nav-btn${active ? " active" : ""}" type="button" data-page="${page}" title="${label}">
@@ -248,7 +317,7 @@ function customSelect(id, value, options, placeholder = "") {
 }
 
 function createCard(item, index, pageKey) {
-  const isLibraryCard = pageKey === "blueprint" && item && typeof item === "object" && "videoPath" in item;
+  const isLibraryCard = item && typeof item === "object" && "folderPath" in item;
   const isActive = (state.activeCardIndexByPage[pageKey] || 0) === index;
   const name = typeof item === "string" ? `${pageKey}-${index + 1}` : item.name;
   const tone = typeof item === "string" ? "graphite" : (item.tone || "graphite");
@@ -280,11 +349,12 @@ function previewModalMarkup() {
   }
 
   const name = typeof item === "string" ? `${pageKey}` : item.name;
-  const isBlueprintLibrary = pageKey === "blueprint" && item && typeof item === "object" && "videoUrl" in item;
-  const packageName = isBlueprintLibrary && item.packagePath
+  const isLibraryResource = item && typeof item === "object" && "folderPath" in item;
+  const resourceLabel = item.label || pageMeta[pageKey]?.title || "资源";
+  const packageName = isLibraryResource && item.packagePath
     ? item.packagePath.split(/[/\\]/).pop()
     : "未检测到压缩包";
-  const previewMedia = isBlueprintLibrary && item.videoUrl
+  const previewMedia = isLibraryResource && item.videoUrl
     ? `<video class="preview-video" src="${item.videoUrl}" muted loop playsinline autoplay controls></video>`
     : `
       <div class="preview-placeholder card-tone-${item.tone || "graphite"}">
@@ -303,7 +373,7 @@ function previewModalMarkup() {
           </div>
           <aside class="preview-side">
             <div class="preview-panel-head">
-              <span class="preview-kicker">${pageKey === "blueprint" ? "蓝图资源" : "资源详情"}</span>
+              <span class="preview-kicker">${resourceLabel}资源</span>
               <strong>${name}</strong>
               <p>当前资源会导入到已选中的虚幻项目中。你可以先预览视频，再执行导入。</p>
             </div>
@@ -322,7 +392,7 @@ function previewModalMarkup() {
               </div>
               <div class="preview-detail">
                 <span>资源状态</span>
-                <strong>${isBlueprintLibrary && item.hasPackage ? "可导入" : "仅可预览"}</strong>
+                <strong>${isLibraryResource && item.hasPackage ? "可导入" : "仅可预览"}</strong>
               </div>
             </div>
             <div class="preview-side-actions">
@@ -418,6 +488,9 @@ function contextMenuMarkup() {
     <div class="context-menu-backdrop" id="context-menu-backdrop">
       <div class="context-menu" style="left:${state.contextMenu.x}px;top:${state.contextMenu.y}px;">
         ${hasPackage ? `<button class="context-menu-item" type="button" data-context-action="import">导入到项目</button>` : ""}
+        <button class="context-menu-item" type="button" data-context-action="edit">修改</button>
+        <button class="context-menu-item" type="button" data-context-action="rename">重命名</button>
+        <button class="context-menu-item danger" type="button" data-context-action="delete">删除</button>
         <button class="context-menu-item" type="button" data-context-action="folder">在文件夹中打开</button>
         <button class="context-menu-item" type="button" data-context-action="copy">复制路径</button>
         <button class="context-menu-item" type="button" data-context-action="details">查看详情</button>
@@ -433,6 +506,92 @@ function toastMarkup() {
   return `
     <div class="toast toast-${state.toast.type}">
       <span>${state.toast.message}</span>
+    </div>
+  `;
+}
+
+function deleteConfirmMarkup() {
+  if (!state.deleteConfirm.open || !state.deleteConfirm.item) {
+    return "";
+  }
+
+  const item = state.deleteConfirm.item;
+  return `
+    <div class="conflict-modal-backdrop" id="delete-confirm-backdrop">
+      <section class="conflict-modal delete-confirm-modal" role="dialog" aria-modal="true">
+        <button class="preview-close" type="button" id="delete-confirm-close-btn" aria-label="关闭">×</button>
+        <div class="conflict-modal-head">
+          <span class="preview-kicker">删除确认</span>
+          <strong>确定删除这个资源吗？</strong>
+          <p>删除后会移除整个资源文件夹，当前操作不可撤销。</p>
+        </div>
+        <div class="preview-import-message">
+          <strong>${item.name || "未命名资源"}</strong><br />
+          ${item.folderPath || ""}
+        </div>
+        ${state.deleteConfirm.message ? `<div class="preview-import-message">${state.deleteConfirm.message}</div>` : ""}
+        <div class="conflict-actions">
+          <button class="action-btn" type="button" id="delete-confirm-cancel-btn" ${state.deleteConfirm.loading ? "disabled" : ""}>取消</button>
+          <button class="action-btn danger-action" type="button" id="delete-confirm-submit-btn" ${state.deleteConfirm.loading ? "disabled" : ""}>
+            ${state.deleteConfirm.loading ? "正在删除..." : "确认删除"}
+          </button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function assetCreateMarkup() {
+  if (!state.assetCreate.open) {
+    return "";
+  }
+
+  const pageKey = state.assetCreate.pageKey;
+  const label = assetLibrary(pageKey).label || pageMeta[pageKey]?.title || "资源";
+  const video = state.assetCreate.video;
+  const packageFile = state.assetCreate.package;
+  return `
+    <div class="modal-backdrop" id="asset-create-backdrop">
+      <section class="asset-create-modal" role="dialog" aria-modal="true">
+        <button class="preview-close" type="button" id="asset-create-close-btn" aria-label="关闭">×</button>
+        <div class="asset-create-head">
+          <span class="preview-kicker">${label}资产</span>
+          <strong>添加资产</strong>
+        </div>
+        <div class="asset-create-body">
+          <label class="asset-create-field">
+            <span>资产名称</span>
+            <input class="settings-input" id="asset-create-name-input" type="text" value="${state.assetCreate.name}" placeholder="输入资产名称" />
+          </label>
+          <div class="asset-drop-grid">
+            <div class="asset-drop-zone${video ? " has-file" : ""}" data-asset-drop="video">
+              <span>预览视频</span>
+              <strong>${video ? video.name : "拖入 mp4 / webm / mov / m4v"}</strong>
+              ${video?.url ? `<video class="asset-drop-preview" src="${video.url}" muted loop playsinline autoplay></video>` : ""}
+              <div class="asset-drop-actions">
+                <button class="asset-file-btn" type="button" data-asset-file-action="choose" data-asset-file-kind="video">选择文件</button>
+                ${video ? `<button class="asset-file-btn ghost" type="button" data-asset-file-action="clear" data-asset-file-kind="video">清除</button>` : ""}
+              </div>
+            </div>
+            <div class="asset-drop-zone${packageFile ? " has-file" : ""}" data-asset-drop="package">
+              <span>资源压缩包</span>
+              <strong>${packageFile ? packageFile.name : "拖入 zip / 7z / rar"}</strong>
+              <div class="asset-package-mark">${packageFile ? "已选择压缩包" : "等待文件"}</div>
+              <div class="asset-drop-actions">
+                <button class="asset-file-btn" type="button" data-asset-file-action="choose" data-asset-file-kind="package">选择文件</button>
+                ${packageFile ? `<button class="asset-file-btn ghost" type="button" data-asset-file-action="clear" data-asset-file-kind="package">清除</button>` : ""}
+              </div>
+            </div>
+          </div>
+          ${state.assetCreate.message ? `<div class="preview-import-message">${state.assetCreate.message}</div>` : ""}
+        </div>
+        <div class="asset-create-actions">
+          <button class="action-btn" type="button" id="asset-create-cancel-btn" ${state.assetCreate.loading ? "disabled" : ""}>取消</button>
+          <button class="action-btn primary" type="button" id="asset-create-submit-btn" ${state.assetCreate.loading ? "disabled" : ""}>
+            ${state.assetCreate.loading ? "正在保存..." : "保存资产"}
+          </button>
+        </div>
+      </section>
     </div>
   `;
 }
@@ -710,6 +869,31 @@ function closeContextMenu() {
   render();
 }
 
+function openDeleteConfirm(pageKey, item) {
+  state.deleteConfirm = {
+    open: true,
+    item,
+    pageKey,
+    loading: false,
+    message: "",
+  };
+  render();
+}
+
+function closeDeleteConfirm() {
+  if (state.deleteConfirm.loading) {
+    return;
+  }
+  state.deleteConfirm = {
+    open: false,
+    item: null,
+    pageKey: "",
+    loading: false,
+    message: "",
+  };
+  render();
+}
+
 function handleContextMenuAction(action) {
   const item = state.contextMenu.item;
   const pageKey = state.contextMenu.pageKey;
@@ -722,6 +906,17 @@ function handleContextMenuAction(action) {
   if (action === "import" || action === "details") {
     closeContextMenu();
     openPreviewModal(pageKey, item);
+  } else if (action === "edit") {
+    if (item.folderPath) {
+      window.libraryBridge?.showInFolder(item.folderPath);
+    }
+    closeContextMenu();
+  } else if (action === "rename") {
+    closeContextMenu();
+    renameAssetItem(pageKey, item);
+  } else if (action === "delete") {
+    closeContextMenu();
+    openDeleteConfirm(pageKey, item);
   } else if (action === "folder") {
     if (item.folderPath) {
       window.libraryBridge?.showInFolder(item.folderPath);
@@ -738,8 +933,232 @@ function handleContextMenuAction(action) {
   }
 }
 
+async function confirmDeleteAsset() {
+  const item = state.deleteConfirm.item;
+  const pageKey = state.deleteConfirm.pageKey;
+  if (!item?.folderPath || !pageKey) {
+    closeDeleteConfirm();
+    return;
+  }
+
+  state.deleteConfirm.loading = true;
+  state.deleteConfirm.message = "";
+  render();
+
+  const result = await window.libraryBridge?.deleteAsset({ folderPath: item.folderPath });
+  if (result?.success) {
+    closeDeleteConfirm();
+    showToast("资源已删除", "success");
+    await loadAssetLibrary(pageKey);
+    return;
+  }
+
+  state.deleteConfirm.loading = false;
+  state.deleteConfirm.message = result?.error || "删除失败";
+  render();
+}
+
+function revokeAssetCreateVideo() {
+  if (state.assetCreate.video?.url) {
+    URL.revokeObjectURL(state.assetCreate.video.url);
+  }
+}
+
+function openAssetCreate(pageKey) {
+  revokeAssetCreateVideo();
+  state.assetCreate = {
+    open: true,
+    pageKey,
+    name: "",
+    video: null,
+    package: null,
+    loading: false,
+    message: "",
+  };
+  render();
+}
+
+function closeAssetCreate() {
+  if (state.assetCreate.loading) {
+    return;
+  }
+  revokeAssetCreateVideo();
+  state.assetCreate = {
+    open: false,
+    pageKey: "",
+    name: "",
+    video: null,
+    package: null,
+    loading: false,
+    message: "",
+  };
+  render();
+}
+
+function assetNameFromFileName(fileName) {
+  return String(fileName || "").replace(/\.[^.]+$/, "").trim();
+}
+
+function maybeFillAssetName(fileName) {
+  if (!state.assetCreate.name.trim()) {
+    state.assetCreate.name = assetNameFromFileName(fileName);
+  }
+}
+
+function clearAssetCreateFile(kind) {
+  if (kind === "video") {
+    revokeAssetCreateVideo();
+    state.assetCreate.video = null;
+  }
+  if (kind === "package") {
+    state.assetCreate.package = null;
+  }
+  state.assetCreate.message = "";
+  render();
+}
+
+function setAssetCreateFileFromPath(kind, fileInfo) {
+  if (!fileInfo?.path) {
+    return;
+  }
+
+  const isVideo = kind === "video";
+  if (isVideo) {
+    revokeAssetCreateVideo();
+    state.assetCreate.video = {
+      name: fileInfo.name,
+      path: fileInfo.path,
+      url: fileInfo.url || "",
+    };
+  } else {
+    state.assetCreate.package = {
+      name: fileInfo.name,
+      path: fileInfo.path,
+    };
+  }
+  maybeFillAssetName(fileInfo.name);
+  state.assetCreate.message = "";
+  render();
+}
+
+async function chooseAssetCreateFile(kind) {
+  const result = await window.libraryBridge?.chooseAssetFile(kind);
+  if (result?.success) {
+    setAssetCreateFileFromPath(kind, result.file);
+  }
+}
+
+function setAssetCreateFile(kind, file) {
+  if (!file) {
+    return;
+  }
+
+  const filePath = window.libraryBridge?.filePath(file) || "";
+  if (!filePath) {
+    state.assetCreate.message = "无法读取文件路径，请从本地磁盘拖入文件。";
+    render();
+    return;
+  }
+  const isVideo = kind === "video";
+  const allowed = isVideo ? /\.(mp4|webm|mov|m4v)$/i : /\.(zip|7z|rar)$/i;
+  if (!allowed.test(file.name)) {
+    state.assetCreate.message = isVideo ? "预览视频仅支持 mp4、webm、mov、m4v。" : "压缩包仅支持 zip、7z、rar。";
+    render();
+    return;
+  }
+
+  if (isVideo) {
+    revokeAssetCreateVideo();
+    state.assetCreate.video = {
+      name: file.name,
+      path: filePath,
+      url: URL.createObjectURL(file),
+    };
+  } else {
+    state.assetCreate.package = {
+      name: file.name,
+      path: filePath,
+    };
+  }
+  maybeFillAssetName(file.name);
+  state.assetCreate.message = "";
+  render();
+}
+
+async function submitAssetCreate() {
+  const createState = state.assetCreate;
+  if (!createState.name.trim()) {
+    state.assetCreate.message = "请填写资产名称。";
+    render();
+    return;
+  }
+
+  state.assetCreate.loading = true;
+  state.assetCreate.message = "";
+  render();
+
+  const result = await window.libraryBridge?.createAsset({
+    type: createState.pageKey,
+    name: createState.name,
+    videoPath: createState.video?.path || "",
+    packagePath: createState.package?.path || "",
+  });
+
+  if (result?.success) {
+    const pageKey = createState.pageKey;
+    closeAssetCreate();
+    showToast("资产已添加", "success");
+    await loadAssetLibrary(pageKey);
+    return;
+  }
+
+  state.assetCreate.loading = false;
+  state.assetCreate.message = result?.error || "添加资产失败。";
+  render();
+}
+
+async function addAssetToPage(pageKey) {
+  openAssetCreate(pageKey);
+}
+
+async function openAssetRoot(pageKey) {
+  const result = await window.libraryBridge?.openAssetRoot(pageKey);
+  if (!result?.success) {
+    showToast(result?.error || "打开目录失败", "error");
+  }
+}
+
+async function refreshAssetPage(pageKey) {
+  await loadAssetLibrary(pageKey);
+  showToast("资源列表已刷新", "info");
+}
+
+async function renameAssetItem(pageKey, item) {
+  if (!item?.folderPath) {
+    return;
+  }
+
+  const nextName = window.prompt("输入新的资源名称", item.name || "");
+  if (nextName === null) {
+    return;
+  }
+
+  const result = await window.libraryBridge?.renameAsset({
+    folderPath: item.folderPath,
+    nextName,
+  });
+
+  if (result?.success) {
+    showToast("资源已重命名", "success");
+    await loadAssetLibrary(pageKey);
+  } else {
+    showToast(result?.error || "重命名失败", "error");
+  }
+}
+
 function cardItemByIndex(pageKey, index) {
-  const items = pageKey === "blueprint" ? state.blueprintLibrary.items : (mediaCards[pageKey] || []);
+  const libraryItems = assetLibrary(pageKey).items;
+  const items = assetPageKeys.includes(pageKey) ? libraryItems : (mediaCards[pageKey] || []);
   return items[index] || null;
 }
 
@@ -809,7 +1228,7 @@ function homePage() {
             <div class="engine-placeholder-copy">
               <div class="eyebrow">${engine.name}</div>
               <h1>该引擎尚未接入</h1>
-              <p>${engine.id === "blender" ? "Blender 是下一个计划接入的引擎，敬请期待。" : "此引擎仍在规划中，后续版本将支持。"}</p>
+              <p>此模块仍在规划中，后续版本将支持。</p>
             </div>
           </section>
         </div>
@@ -818,8 +1237,8 @@ function homePage() {
   }
 
   const projectCount = state.projects.length;
-  const resourceCount = state.blueprintLibrary.items.length;
-  const pluginCount = (mediaCards.plugin || []).length;
+  const resourceCount = assetLibrary("blueprint").items.length;
+  const pluginCount = assetLibrary("plugin").items.length;
   const current = activeProject();
 
   return `
@@ -871,30 +1290,42 @@ function homePage() {
 }
 
 function cardPage(key) {
-  const isBlueprint = key === "blueprint";
-  const items = isBlueprint ? state.blueprintLibrary.items : (mediaCards[key] || []);
+  const library = assetLibrary(key);
+  const isAssetPage = assetPageKeys.includes(key);
+  const label = library.label || pageMeta[key]?.title || "资源";
+  const items = isAssetPage ? library.items : (mediaCards[key] || []);
+  const showLibraryRoot = state.settings.showLibraryRootPath !== false;
   return `
     <section class="page${state.activePage === key ? " active" : ""}" data-page-panel="${key}">
       <div class="content scrollable">
-        ${isBlueprint ? `
-          <section class="resource-hero">
-            <div class="resource-hero-copy">
-              <div class="eyebrow">蓝图资源库</div>
-              <h2>以卡片方式预览、筛选并直接导入当前项目</h2>
+        ${isAssetPage ? `
+          <section class="resource-toolbar">
+            <div class="resource-toolbar-main">
+              <div class="resource-toolbar-actions">
+                <button class="action-btn primary" type="button" data-asset-action="add" data-asset-page="${key}">添加</button>
+                <button class="action-btn" type="button" data-asset-action="open-root" data-asset-page="${key}">打开目录</button>
+                <button class="action-btn" type="button" data-asset-action="refresh" data-asset-page="${key}">刷新</button>
+              </div>
+              ${showLibraryRoot ? `
+                <div class="resource-root-bar">
+                  <span>当前读取目录</span>
+                  <strong title="${library.libraryRoot || "暂无目录"}">${library.libraryRoot || "暂无目录"}</strong>
+                </div>
+              ` : ""}
             </div>
-            <div class="resource-hero-meta">
+            <div class="resource-toolbar-meta">
               <div class="resource-stat">
                 <span>当前项目</span>
                 <strong>${safeProjectName(activeProject())}</strong>
               </div>
               <div class="resource-stat">
                 <span>资源数量</span>
-                <strong>${state.blueprintLibrary.items.length}</strong>
+                <strong>${items.length}</strong>
               </div>
             </div>
           </section>
         ` : ""}
-        ${isBlueprint ? `<div class="panel-note library-note">${state.blueprintLibrary.message}</div>` : ""}
+        ${isAssetPage ? `<div class="panel-note library-note">${library.message}</div>` : ""}
         ${
           items.length
             ? `
@@ -910,16 +1341,25 @@ function cardPage(key) {
 }
 
 function settingsPage() {
+  const moduleOptions = [
+    ["ae", "AE"],
+    ["3dmax", "3Dmax"],
+    ["blender", "Blender"],
+    ["c4d", "C4D"],
+    ["maya", "MAYA"],
+    ["ps", "PS"],
+  ];
   const pageOptions = [
     ["home", "主页"],
     ["blueprint", "蓝图"],
     ["material", "材质"],
     ["plugin", "插件"],
-    ["animation", "动画"],
+    ["script", "脚本"],
+    ["node", "节点"],
+    ["project", "工程"],
     ["settings", "设置"],
   ].map(([value, label]) => ({ value, label }));
 
-  const columnOptions = [2, 3, 4, 5, 6, 7, 8].map((value) => ({ value: String(value), label: `${value} 列` }));
   const motionOptions = [
     ["soft", "柔和"],
     ["normal", "标准"],
@@ -949,11 +1389,6 @@ function settingsPage() {
                 <span class="settings-label">默认打开哪个页面</span>
                 ${customSelect("default-page", state.settingsDraft.defaultPage, pageOptions, "选择页面")}
               </div>
-              <div class="settings-field">
-                <span class="settings-label">每行卡片数量</span>
-                ${customSelect("default-columns", String(state.settingsDraft.defaultCardColumns), columnOptions, "选择列数")}
-                <div class="panel-note">修改后会立即应用，同时作为默认布局保存。</div>
-              </div>
             </div>
             <div class="settings-grid compact">
               <div class="settings-field">
@@ -968,9 +1403,24 @@ function settingsPage() {
             </div>
             <div class="settings-grid compact">
               <label class="settings-toggle">
-                <input type="checkbox" id="visible-playback-toggle" ${state.settingsDraft.visibleOnlyPlayback ? "checked" : ""} />
-                <span>是否只播放当前悬停卡片</span>
+                <input type="checkbox" id="show-library-root-toggle" ${state.settingsDraft.showLibraryRootPath ? "checked" : ""} />
+                <span>顶部是否显示当前读取目录</span>
               </label>
+            </div>
+            <div class="settings-field">
+              <span class="settings-label">顶部功能显示</span>
+              <div class="module-toggle-group">
+                ${moduleOptions.map(([id, label]) => `
+                  <button
+                    class="module-toggle${state.settingsDraft.visibleModules.includes(id) ? " active" : ""}"
+                    type="button"
+                    data-module-toggle="${id}"
+                  >
+                    ${label}
+                  </button>
+                `).join("")}
+              </div>
+              <div class="panel-note">选中的功能会显示在顶部栏，虚幻引擎始终显示。</div>
             </div>
             <div class="panel-note">${state.settingsMessage}</div>
           </div>
@@ -993,7 +1443,7 @@ function sidebarNavMarkup() {
 function engineSwitcherMarkup() {
   return `
     <div class="engine-tabs">
-      ${engines
+      ${visibleEngines()
         .map((eng) => {
           const isActive = eng.id === state.activeEngine;
           const isDisabled = eng.status !== "connected";
@@ -1054,6 +1504,7 @@ function shellMarkup() {
           </div>
           ${engineSwitcherMarkup()}
           <div class="window-controls">
+            <button class="window-btn pin${state.alwaysOnTop ? " active" : ""}" type="button" title="${state.alwaysOnTop ? "取消置顶" : "置顶"}" data-window-action="pin"></button>
             <button class="window-btn min" type="button" title="最小化" data-window-action="minimize"></button>
             <button class="window-btn max" type="button" title="最大化" data-window-action="maximize"></button>
             <button class="window-btn close" type="button" title="关闭" data-window-action="close"></button>
@@ -1097,12 +1548,16 @@ function shellMarkup() {
           ${cardPage("blueprint")}
           ${cardPage("material")}
           ${cardPage("plugin")}
-          ${cardPage("animation")}
+          ${cardPage("script")}
+          ${cardPage("node")}
+          ${cardPage("project")}
           ${settingsPage()}
         </main>
       </div>
       ${previewModalMarkup()}
       ${conflictModalMarkup()}
+      ${deleteConfirmMarkup()}
+      ${assetCreateMarkup()}
       ${toastMarkup()}
       ${contextMenuMarkup()}
     </div>
@@ -1198,6 +1653,8 @@ async function loadSettingsState() {
       cornerRadius: Number(data?.cornerRadius) || 28,
       motionStrength: data?.motionStrength || "normal",
       visibleOnlyPlayback: data?.visibleOnlyPlayback !== false,
+      showLibraryRootPath: data?.showLibraryRootPath !== false,
+      visibleModules: Array.isArray(data?.visibleModules) ? data.visibleModules : [...optionalModuleIds],
     };
     state.columns = state.settingsDraft.defaultCardColumns;
     if (!state.activePage || state.activePage === "home") {
@@ -1210,20 +1667,59 @@ async function loadSettingsState() {
 }
 
 async function loadBlueprintLibrary() {
+  await loadAssetLibraries();
+}
+
+async function loadAssetLibrary(pageKey) {
   try {
-    const data = await window.libraryBridge?.getBlueprints();
-    state.blueprintLibrary = {
+    const data = await window.libraryBridge?.getAssets(pageKey);
+    state.assetLibraries[pageKey] = {
       items: Array.isArray(data?.items) ? data.items : [],
-      message: data?.message || "蓝图资源已读取。",
+      message: data?.message || `${pageMeta[pageKey]?.title || "资源"}资源已读取。`,
       libraryRoot: data?.libraryRoot || "",
+      label: data?.label || pageMeta[pageKey]?.title || "资源",
     };
   } catch (error) {
-    state.blueprintLibrary = {
+    state.assetLibraries[pageKey] = {
       items: [],
-      message: "蓝图资源读取失败。",
+      message: `${pageMeta[pageKey]?.title || "资源"}资源读取失败。`,
       libraryRoot: "",
+      label: pageMeta[pageKey]?.title || "资源",
     };
   }
+  render();
+}
+
+async function loadAssetLibraries() {
+  const requests = assetPageKeys.map(async (pageKey) => {
+    try {
+      const data = await window.libraryBridge?.getAssets(pageKey);
+      return [
+        pageKey,
+        {
+          items: Array.isArray(data?.items) ? data.items : [],
+          message: data?.message || `${pageMeta[pageKey]?.title || "资源"}资源已读取。`,
+          libraryRoot: data?.libraryRoot || "",
+          label: data?.label || pageMeta[pageKey]?.title || "资源",
+        },
+      ];
+    } catch (error) {
+      return [
+        pageKey,
+        {
+          items: [],
+          message: `${pageMeta[pageKey]?.title || "资源"}资源读取失败。`,
+          libraryRoot: "",
+          label: pageMeta[pageKey]?.title || "资源",
+        },
+      ];
+    }
+  });
+
+  const entries = await Promise.all(requests);
+  entries.forEach(([pageKey, library]) => {
+    state.assetLibraries[pageKey] = library;
+  });
   render();
 }
 
@@ -1286,10 +1782,12 @@ function applySettingsState(data, message) {
   state.settingsDraft = {
     resourceRootPath: data?.resourceRootPath || "",
     defaultPage: data?.defaultPage || "home",
-      defaultCardColumns: Number(data?.defaultCardColumns) || 5,
+    defaultCardColumns: Number(data?.defaultCardColumns) || 5,
     cornerRadius: Number(data?.cornerRadius) || 28,
     motionStrength: data?.motionStrength || "normal",
     visibleOnlyPlayback: data?.visibleOnlyPlayback !== false,
+    showLibraryRootPath: data?.showLibraryRootPath !== false,
+    visibleModules: Array.isArray(data?.visibleModules) ? data.visibleModules : [...optionalModuleIds],
   };
   state.columns = state.settingsDraft.defaultCardColumns;
   if (message) {
@@ -1393,6 +1891,12 @@ function bindEvents() {
       if (action === "maximize") {
         window.desktopWindow?.maximizeToggle();
       }
+      if (action === "pin") {
+        window.desktopWindow?.alwaysOnTopToggle()?.then((isPinned) => {
+          state.alwaysOnTop = Boolean(isPinned);
+          render();
+        });
+      }
       if (action === "close") {
         window.desktopWindow?.close();
       }
@@ -1423,6 +1927,24 @@ function bindEvents() {
   document.getElementById("reload-resource-root-btn")?.addEventListener("click", () => {
     loadSettingsState();
     loadBlueprintLibrary();
+  });
+
+  document.querySelectorAll("[data-asset-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.assetAction;
+      const pageKey = button.dataset.assetPage;
+      if (!pageKey) return;
+
+      if (action === "add") {
+        addAssetToPage(pageKey);
+      }
+      if (action === "open-root") {
+        openAssetRoot(pageKey);
+      }
+      if (action === "refresh") {
+        refreshAssetPage(pageKey);
+      }
+    });
   });
 
   document.getElementById("resource-root-input")?.addEventListener("input", (event) => {
@@ -1476,10 +1998,30 @@ function bindEvents() {
     syncRuntimeStyles();
   });
 
-  document.getElementById("visible-playback-toggle")?.addEventListener("change", (event) => {
-    state.settingsDraft.visibleOnlyPlayback = event.target.checked;
-    state.settings.visibleOnlyPlayback = event.target.checked;
-    applyPlaybackMode();
+  document.getElementById("show-library-root-toggle")?.addEventListener("change", (event) => {
+    state.settingsDraft.showLibraryRootPath = event.target.checked;
+    state.settings.showLibraryRootPath = event.target.checked;
+    render();
+  });
+
+  document.querySelectorAll("[data-module-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const moduleId = button.dataset.moduleToggle;
+      const visible = new Set(state.settingsDraft.visibleModules);
+      if (visible.has(moduleId)) {
+        visible.delete(moduleId);
+      } else {
+        visible.add(moduleId);
+      }
+
+      state.settingsDraft.visibleModules = [...visible].filter((id) => optionalModuleIds.includes(id));
+      state.settings.visibleModules = state.settingsDraft.visibleModules;
+      if (optionalModuleIds.includes(state.activeEngine) && !state.settings.visibleModules.includes(state.activeEngine)) {
+        state.activeEngine = "unreal";
+        state.activePage = "home";
+      }
+      render();
+    });
   });
 
   document.getElementById("blueprint-playback-toggle")?.addEventListener("change", (event) => {
@@ -1607,6 +2149,86 @@ function bindEvents() {
     if (event.target.id === "conflict-modal-backdrop") {
       closeConflictModal();
     }
+  });
+
+  document.getElementById("delete-confirm-close-btn")?.addEventListener("click", () => {
+    closeDeleteConfirm();
+  });
+
+  document.getElementById("delete-confirm-cancel-btn")?.addEventListener("click", () => {
+    closeDeleteConfirm();
+  });
+
+  document.getElementById("delete-confirm-submit-btn")?.addEventListener("click", () => {
+    confirmDeleteAsset();
+  });
+
+  document.getElementById("delete-confirm-backdrop")?.addEventListener("click", (event) => {
+    if (event.target.id === "delete-confirm-backdrop") {
+      closeDeleteConfirm();
+    }
+  });
+
+  document.getElementById("asset-create-name-input")?.addEventListener("input", (event) => {
+    state.assetCreate.name = event.target.value;
+  });
+
+  document.getElementById("asset-create-close-btn")?.addEventListener("click", () => {
+    closeAssetCreate();
+  });
+
+  document.getElementById("asset-create-cancel-btn")?.addEventListener("click", () => {
+    closeAssetCreate();
+  });
+
+  document.getElementById("asset-create-submit-btn")?.addEventListener("click", () => {
+    submitAssetCreate();
+  });
+
+  document.getElementById("asset-create-backdrop")?.addEventListener("click", (event) => {
+    if (event.target.id === "asset-create-backdrop") {
+      closeAssetCreate();
+    }
+  });
+
+  document.getElementById("asset-create-backdrop")?.addEventListener("dragover", (event) => {
+    event.preventDefault();
+  });
+
+  document.getElementById("asset-create-backdrop")?.addEventListener("drop", (event) => {
+    event.preventDefault();
+  });
+
+  document.querySelectorAll("[data-asset-drop]").forEach((dropZone) => {
+    dropZone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropZone.classList.add("drag-over");
+    });
+
+    dropZone.addEventListener("dragleave", () => {
+      dropZone.classList.remove("drag-over");
+    });
+
+    dropZone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dropZone.classList.remove("drag-over");
+      const file = event.dataTransfer?.files?.[0];
+      setAssetCreateFile(dropZone.dataset.assetDrop, file);
+    });
+  });
+
+  document.querySelectorAll("[data-asset-file-action]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const kind = button.dataset.assetFileKind;
+      const action = button.dataset.assetFileAction;
+      if (action === "choose") {
+        chooseAssetCreateFile(kind);
+      }
+      if (action === "clear") {
+        clearAssetCreateFile(kind);
+      }
+    });
   });
 
   document.querySelector(".import-cancel-btn")?.addEventListener("click", async () => {

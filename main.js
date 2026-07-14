@@ -7,6 +7,17 @@ const os = require('os')
 let mainWindow = null
 let importCancelled = false
 
+app.commandLine.appendSwitch('disable-gpu')
+app.commandLine.appendSwitch('disable-gpu-compositing')
+app.commandLine.appendSwitch('disable-gpu-sandbox')
+app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor')
+app.commandLine.appendSwitch('in-process-gpu')
+app.disableHardwareAcceleration()
+
+const localUserDataPath = path.join(__dirname, '.workbuddy', 'electron-user-data')
+fs.mkdirSync(localUserDataPath, { recursive: true })
+app.setPath('userData', localUserDataPath)
+
 function storePath() {
   return path.join(app.getPath('userData'), 'projects-store.json')
 }
@@ -22,6 +33,8 @@ function defaultStore() {
       cornerRadius: 28,
       motionStrength: 'normal',
       visibleOnlyPlayback: true,
+      showLibraryRootPath: true,
+      visibleModules: ['ae', '3dmax', 'blender', 'c4d', 'maya', 'ps'],
     },
   }
 }
@@ -40,6 +53,10 @@ function readStore() {
         cornerRadius: Number(parsed.settings?.cornerRadius) || 28,
         motionStrength: typeof parsed.settings?.motionStrength === 'string' ? parsed.settings.motionStrength : 'normal',
         visibleOnlyPlayback: parsed.settings?.visibleOnlyPlayback !== undefined ? Boolean(parsed.settings.visibleOnlyPlayback) : true,
+        showLibraryRootPath: parsed.settings?.showLibraryRootPath !== undefined ? Boolean(parsed.settings.showLibraryRootPath) : true,
+        visibleModules: Array.isArray(parsed.settings?.visibleModules)
+          ? parsed.settings.visibleModules
+          : ['ae', '3dmax', 'blender', 'c4d', 'maya', 'ps'],
       },
     }
   } catch (error) {
@@ -227,20 +244,94 @@ function firstExistingPath(paths) {
   return paths.find((targetPath) => targetPath && fs.existsSync(targetPath)) || ''
 }
 
-function blueprintRootPath(resourceRootPath) {
+const assetLibraryTypes = {
+  blueprint: {
+    label: '蓝图',
+    folderNames: ['蓝图', 'Blueprint', 'Blueprints', 'blueprint', 'blueprints'],
+  },
+  material: {
+    label: '材质',
+    folderNames: ['材质', 'Material', 'Materials', 'material', 'materials'],
+  },
+  plugin: {
+    label: '插件',
+    folderNames: ['插件', 'Plugin', 'Plugins', 'plugin', 'plugins'],
+  },
+  script: {
+    label: '脚本',
+    folderNames: ['脚本', 'Script', 'Scripts', 'script', 'scripts'],
+  },
+  node: {
+    label: '节点',
+    folderNames: ['节点', 'Node', 'Nodes', 'node', 'nodes'],
+  },
+  project: {
+    label: '工程',
+    folderNames: ['工程', 'Project', 'Projects', 'project', 'projects'],
+  },
+}
+
+function unrealAssetRootPath(resourceRootPath) {
   const normalizedRoot = String(resourceRootPath || '').trim()
   if (!normalizedRoot) {
     return ''
   }
 
   return firstExistingPath([
-    path.join(normalizedRoot, '蓝图'),
-    path.join(normalizedRoot, '资产', '蓝图'),
-    path.join(normalizedRoot, 'assets', 'blueprint'),
-    path.join(normalizedRoot, 'Assets', 'Blueprint'),
-    path.join(normalizedRoot, 'Blueprint'),
-    path.join(normalizedRoot, 'blueprint'),
+    path.join(normalizedRoot, '虚幻引擎'),
+    path.join(normalizedRoot, 'Unreal Engine'),
+    path.join(normalizedRoot, 'UnrealEngine'),
+    path.join(normalizedRoot, '资产', '虚幻引擎'),
+    path.join(normalizedRoot, '资产', 'Unreal Engine'),
+    path.join(normalizedRoot, '资产', 'UnrealEngine'),
+    path.join(normalizedRoot, 'Assets', 'Unreal Engine'),
+    path.join(normalizedRoot, 'Assets', 'UnrealEngine'),
+    path.join(normalizedRoot, 'assets', 'unreal engine'),
+    path.join(normalizedRoot, 'assets', 'unrealengine'),
+    path.basename(normalizedRoot) === '虚幻引擎' ? normalizedRoot : '',
   ])
+}
+
+function preferredUnrealAssetRootPath(resourceRootPath) {
+  const normalizedRoot = String(resourceRootPath || '').trim()
+  if (!normalizedRoot) {
+    return ''
+  }
+
+  if (path.basename(normalizedRoot) === '虚幻引擎') {
+    return normalizedRoot
+  }
+
+  return path.join(normalizedRoot, '虚幻引擎')
+}
+
+function assetTypeRootPath(resourceRootPath, type) {
+  const assetRoot = unrealAssetRootPath(resourceRootPath)
+  const typeMeta = assetLibraryTypes[type] || assetLibraryTypes.blueprint
+  if (!assetRoot) {
+    return ''
+  }
+
+  return firstExistingPath(typeMeta.folderNames.map((folderName) => path.join(assetRoot, folderName)))
+}
+
+function preferredAssetTypeRootPath(resourceRootPath, type) {
+  const assetRoot = preferredUnrealAssetRootPath(resourceRootPath)
+  const typeMeta = assetLibraryTypes[type] || assetLibraryTypes.blueprint
+  return assetRoot ? path.join(assetRoot, typeMeta.label) : ''
+}
+
+function ensureUnrealAssetDirectories(resourceRootPath) {
+  const assetRoot = unrealAssetRootPath(resourceRootPath) || preferredUnrealAssetRootPath(resourceRootPath)
+  if (!assetRoot) {
+    return ''
+  }
+
+  fs.mkdirSync(assetRoot, { recursive: true })
+  Object.keys(assetLibraryTypes).forEach((type) => {
+    fs.mkdirSync(preferredAssetTypeRootPath(resourceRootPath, type), { recursive: true })
+  })
+  return assetRoot
 }
 
 function findPreviewFiles(folderPath) {
@@ -265,25 +356,61 @@ function findPreviewFiles(folderPath) {
   }
 }
 
-function blueprintLibraryState() {
+function assetLibraryState(type = 'blueprint') {
   const settings = settingsState()
-  const libraryRoot = blueprintRootPath(settings.resourceRootPath)
+  const typeKey = assetLibraryTypes[type] ? type : 'blueprint'
+  const typeMeta = assetLibraryTypes[typeKey]
 
   if (!settings.resourceRootPath) {
     return {
+      type: typeKey,
+      label: typeMeta.label,
       resourceRootPath: '',
+      unrealRoot: '',
       libraryRoot: '',
       items: [],
       message: '请先在设置中选择资源根目录。',
     }
   }
 
-  if (!libraryRoot) {
+  let unrealRoot = ''
+  let libraryRoot = ''
+  try {
+    unrealRoot = ensureUnrealAssetDirectories(settings.resourceRootPath)
+    libraryRoot = assetTypeRootPath(settings.resourceRootPath, typeKey) || preferredAssetTypeRootPath(settings.resourceRootPath, typeKey)
+  } catch (error) {
     return {
+      type: typeKey,
+      label: typeMeta.label,
       resourceRootPath: settings.resourceRootPath,
+      unrealRoot: '',
       libraryRoot: '',
       items: [],
-      message: '未找到蓝图资源目录，请确认资源根目录下存在“蓝图”或“资产/蓝图”文件夹。',
+      message: `创建${typeMeta.label}资源目录失败，请检查资源根目录权限。`,
+    }
+  }
+
+  if (!unrealRoot) {
+    return {
+      type: typeKey,
+      label: typeMeta.label,
+      resourceRootPath: settings.resourceRootPath,
+      unrealRoot: '',
+      libraryRoot: '',
+      items: [],
+      message: '未找到虚幻引擎资源目录，请确认资源根目录下存在“资产/虚幻引擎”文件夹。',
+    }
+  }
+
+  if (!libraryRoot) {
+    return {
+      type: typeKey,
+      label: typeMeta.label,
+      resourceRootPath: settings.resourceRootPath,
+      unrealRoot,
+      libraryRoot: '',
+      items: [],
+      message: `未找到${typeMeta.label}资源目录，请确认“资产/虚幻引擎”下存在“${typeMeta.label}”文件夹。`,
     }
   }
 
@@ -296,6 +423,8 @@ function blueprintLibraryState() {
         const previewFiles = findPreviewFiles(folderPath)
         return {
           name: entry.name,
+          type: typeKey,
+          label: typeMeta.label,
           folderPath,
           videoPath: previewFiles.videoPath,
           videoUrl: previewFiles.videoPath ? pathToFileURL(previewFiles.videoPath).href : '',
@@ -304,34 +433,43 @@ function blueprintLibraryState() {
           hasPackage: Boolean(previewFiles.packagePath),
         }
       })
-      .filter((item) => item.videoPath || item.packagePath)
       .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
 
     return {
+      type: typeKey,
+      label: typeMeta.label,
       resourceRootPath: settings.resourceRootPath,
+      unrealRoot,
       libraryRoot,
       items: folders,
-      message: folders.length ? `已读取 ${folders.length} 个蓝图资源文件夹。` : '蓝图目录存在，但还没有可用资源。',
+      message: folders.length ? `已读取 ${folders.length} 个${typeMeta.label}资源文件夹。` : `${typeMeta.label}目录存在，但还没有可用资源。`,
     }
   } catch (error) {
     return {
+      type: typeKey,
+      label: typeMeta.label,
       resourceRootPath: settings.resourceRootPath,
+      unrealRoot,
       libraryRoot,
       items: [],
-      message: '读取蓝图资源目录失败。',
+      message: `读取${typeMeta.label}资源目录失败。`,
     }
   }
 }
 
+function blueprintLibraryState() {
+  return assetLibraryState('blueprint')
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1480,
-    height: 920,
-    minWidth: 1200,
-    minHeight: 760,
-    backgroundColor: '#00000000',
+    width: 1280,
+    height: 820,
+    minWidth: 1040,
+    minHeight: 680,
+    backgroundColor: '#111111',
     frame: false,
-    transparent: true,
+    transparent: false,
     roundedCorners: true,
     titleBarStyle: 'hidden',
     autoHideMenuBar: true,
@@ -361,6 +499,17 @@ ipcMain.on('window:maximize-toggle', (event) => {
   } else {
     win.maximize()
   }
+})
+
+ipcMain.handle('window:always-on-top-toggle', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win) {
+    return false
+  }
+
+  const nextState = !win.isAlwaysOnTop()
+  win.setAlwaysOnTop(nextState)
+  return nextState
 })
 
 ipcMain.on('window:close', (event) => {
@@ -449,6 +598,161 @@ ipcMain.handle('library:get-blueprints', () => {
   return blueprintLibraryState()
 })
 
+ipcMain.handle('library:get-assets', (event, type) => {
+  return assetLibraryState(type)
+})
+
+ipcMain.handle('library:add-asset-folder', async (event, type) => {
+  const typeKey = assetLibraryTypes[type] ? type : 'blueprint'
+  const settings = settingsState()
+  if (!settings.resourceRootPath) {
+    return { success: false, error: '请先在设置中选择资源根目录。' }
+  }
+
+  const targetRoot = preferredAssetTypeRootPath(settings.resourceRootPath, typeKey)
+  fs.mkdirSync(targetRoot, { recursive: true })
+
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: `选择要添加的${assetLibraryTypes[typeKey].label}资源文件夹`,
+    properties: ['openDirectory'],
+  })
+
+  if (result.canceled || !result.filePaths.length) {
+    return { success: false, cancelled: true, error: '未选择资源文件夹。' }
+  }
+
+  const sourceDir = result.filePaths[0]
+  const targetDir = uniqueResourcePath(targetRoot, path.basename(sourceDir))
+  try {
+    await copyDirRecursive(sourceDir, targetDir)
+    return { success: true, targetPath: targetDir, library: assetLibraryState(typeKey) }
+  } catch (error) {
+    return { success: false, error: `添加资源失败：${error.message || '未知错误'}` }
+  }
+})
+
+ipcMain.handle('library:open-asset-root', (event, type) => {
+  const typeKey = assetLibraryTypes[type] ? type : 'blueprint'
+  const settings = settingsState()
+  if (!settings.resourceRootPath) {
+    return { success: false, error: '请先在设置中选择资源根目录。' }
+  }
+
+  const targetRoot = preferredAssetTypeRootPath(settings.resourceRootPath, typeKey)
+  fs.mkdirSync(targetRoot, { recursive: true })
+  shell.openPath(targetRoot)
+  return { success: true, path: targetRoot }
+})
+
+ipcMain.handle('library:rename-asset', (event, data) => {
+  const folderPath = data?.folderPath || ''
+  const nextName = sanitizeResourceName(data?.nextName || '')
+  if (!folderPath || !fs.existsSync(folderPath)) {
+    return { success: false, error: '资源文件夹不存在。' }
+  }
+  if (!nextName) {
+    return { success: false, error: '资源名称不能为空。' }
+  }
+
+  const parentDir = path.dirname(folderPath)
+  const targetPath = path.join(parentDir, nextName)
+  if (targetPath.toLowerCase() !== folderPath.toLowerCase() && fs.existsSync(targetPath)) {
+    return { success: false, error: '同名资源已存在。' }
+  }
+
+  try {
+    fs.renameSync(folderPath, targetPath)
+    return { success: true, targetPath }
+  } catch (error) {
+    return { success: false, error: `重命名失败：${error.message || '未知错误'}` }
+  }
+})
+
+ipcMain.handle('library:delete-asset', async (event, data) => {
+  const folderPath = data?.folderPath || ''
+  if (!folderPath || !fs.existsSync(folderPath)) {
+    return { success: false, error: '资源文件夹不存在。' }
+  }
+
+  try {
+    await shell.trashItem(folderPath)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: `移到回收站失败：${error.message || '未知错误'}` }
+  }
+})
+
+ipcMain.handle('library:choose-asset-file', async (event, kind) => {
+  const isVideo = kind === 'video'
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: isVideo ? '选择预览视频' : '选择资源压缩包',
+    properties: ['openFile'],
+    filters: [
+      isVideo
+        ? { name: 'Video', extensions: ['mp4', 'webm', 'mov', 'm4v'] }
+        : { name: 'Archive', extensions: ['zip', '7z', 'rar'] },
+    ],
+  })
+
+  if (result.canceled || !result.filePaths.length) {
+    return { success: false, cancelled: true }
+  }
+
+  const filePath = result.filePaths[0]
+  return {
+    success: true,
+    file: {
+      name: path.basename(filePath),
+      path: filePath,
+      url: isVideo ? pathToFileURL(filePath).href : '',
+    },
+  }
+})
+
+ipcMain.handle('library:create-asset', async (event, data) => {
+  const typeKey = assetLibraryTypes[data?.type] ? data.type : 'blueprint'
+  const settings = settingsState()
+  if (!settings.resourceRootPath) {
+    return { success: false, error: '请先在设置中选择资源根目录。' }
+  }
+
+  const name = sanitizeResourceName(data?.name || '')
+  if (!name) {
+    return { success: false, error: '请填写资产名称。' }
+  }
+
+  const videoPath = data?.videoPath || ''
+  const packagePath = data?.packagePath || ''
+  const hasVideo = videoPath && fs.existsSync(videoPath)
+  const hasPackage = packagePath && fs.existsSync(packagePath)
+  if (!hasVideo && !hasPackage) {
+    return { success: false, error: '请至少拖入预览视频或压缩包。' }
+  }
+
+  if (hasVideo && !/\.(mp4|webm|mov|m4v)$/i.test(videoPath)) {
+    return { success: false, error: '预览视频仅支持 mp4、webm、mov、m4v。' }
+  }
+  if (hasPackage && !/\.(zip|7z|rar)$/i.test(packagePath)) {
+    return { success: false, error: '压缩包仅支持 zip、7z、rar。' }
+  }
+
+  const targetRoot = preferredAssetTypeRootPath(settings.resourceRootPath, typeKey)
+  const targetDir = path.join(targetRoot, name)
+  if (fs.existsSync(targetDir)) {
+    return { success: false, error: '同名资产已存在，请换一个名称。' }
+  }
+
+  try {
+    fs.mkdirSync(targetDir, { recursive: true })
+    await copyAssetFile(videoPath, targetDir, 'preview')
+    await copyAssetFile(packagePath, targetDir, 'package')
+    return { success: true, targetPath: targetDir, library: assetLibraryState(typeKey) }
+  } catch (error) {
+    removeDirRecursive(targetDir)
+    return { success: false, error: `创建资产失败：${error.message || '未知错误'}` }
+  }
+})
+
 ipcMain.handle('settings:choose-resource-root', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: '选择资源根目录',
@@ -463,6 +767,7 @@ ipcMain.handle('settings:choose-resource-root', async () => {
   store.settings = store.settings || {}
   store.settings.resourceRootPath = result.filePaths[0]
   writeStore(store)
+  ensureUnrealAssetDirectories(store.settings.resourceRootPath)
   return settingsState()
 })
 
@@ -471,6 +776,9 @@ ipcMain.handle('settings:save-resource-root', (event, resourceRootPath) => {
   store.settings = store.settings || {}
   store.settings.resourceRootPath = String(resourceRootPath || '').trim()
   writeStore(store)
+  if (store.settings.resourceRootPath) {
+    ensureUnrealAssetDirectories(store.settings.resourceRootPath)
+  }
   return settingsState()
 })
 
@@ -486,8 +794,15 @@ ipcMain.handle('settings:save-all', (event, nextSettings) => {
       ? String(nextSettings.motionStrength)
       : 'normal',
     visibleOnlyPlayback: Boolean(nextSettings?.visibleOnlyPlayback),
+    showLibraryRootPath: nextSettings?.showLibraryRootPath !== false,
+    visibleModules: Array.isArray(nextSettings?.visibleModules)
+      ? nextSettings.visibleModules.filter((id) => ['ae', '3dmax', 'blender', 'c4d', 'maya', 'ps'].includes(id))
+      : ['ae', '3dmax', 'blender', 'c4d', 'maya', 'ps'],
   }
   writeStore(store)
+  if (store.settings.resourceRootPath) {
+    ensureUnrealAssetDirectories(store.settings.resourceRootPath)
+  }
   return settingsState()
 })
 
@@ -636,6 +951,47 @@ function removeDirRecursive(dirPath) {
   } catch (error) {
     // 忽略清理错误
   }
+}
+
+async function copyDirRecursive(sourceDir, targetDir) {
+  await fs.promises.mkdir(targetDir, { recursive: true })
+  const entries = await fs.promises.readdir(sourceDir, { withFileTypes: true })
+  for (const entry of entries) {
+    const sourcePath = path.join(sourceDir, entry.name)
+    const targetPath = path.join(targetDir, entry.name)
+    if (entry.isDirectory()) {
+      await copyDirRecursive(sourcePath, targetPath)
+    } else if (entry.isFile()) {
+      await fs.promises.copyFile(sourcePath, targetPath)
+    }
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+}
+
+function sanitizeResourceName(name) {
+  return String(name || '').trim().replace(/[<>:"/\\|?*]/g, '')
+}
+
+function uniqueResourcePath(parentDir, baseName) {
+  const cleanName = sanitizeResourceName(baseName) || '未命名资源'
+  let targetPath = path.join(parentDir, cleanName)
+  let index = 2
+  while (fs.existsSync(targetPath)) {
+    targetPath = path.join(parentDir, `${cleanName}-${index}`)
+    index += 1
+  }
+  return targetPath
+}
+
+async function copyAssetFile(sourcePath, targetDir, baseName) {
+  if (!sourcePath || !fs.existsSync(sourcePath)) {
+    return ''
+  }
+
+  const ext = path.extname(sourcePath)
+  const targetPath = path.join(targetDir, `${baseName}${ext}`)
+  await fs.promises.copyFile(sourcePath, targetPath)
+  return targetPath
 }
 
 // ===== 导入到项目：IPC 处理 =====
