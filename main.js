@@ -3,9 +3,12 @@ const fs = require('fs')
 const path = require('path')
 const { pathToFileURL } = require('url')
 const os = require('os')
+const net = require('net')
 
 let mainWindow = null
 let importCancelled = false
+const uePythonHost = '127.0.0.1'
+const uePythonPort = 8765
 
 app.commandLine.appendSwitch('disable-gpu')
 app.commandLine.appendSwitch('disable-gpu-compositing')
@@ -30,9 +33,10 @@ function defaultStore() {
       resourceRootPath: '',
       defaultPage: 'home',
       defaultCardColumns: 5,
-      cornerRadius: 28,
-      motionStrength: 'normal',
+      cornerRadius: 22,
+      motionStrength: 'soft',
       visibleOnlyPlayback: true,
+      squarePreviewFill: true,
       showLibraryRootPath: true,
       visibleModules: ['ae', '3dmax', 'blender', 'c4d', 'maya', 'ps'],
     },
@@ -50,9 +54,10 @@ function readStore() {
         resourceRootPath: typeof parsed.settings?.resourceRootPath === 'string' ? parsed.settings.resourceRootPath : '',
         defaultPage: typeof parsed.settings?.defaultPage === 'string' ? parsed.settings.defaultPage : 'home',
         defaultCardColumns: Number(parsed.settings?.defaultCardColumns) || 5,
-        cornerRadius: Number(parsed.settings?.cornerRadius) || 28,
-        motionStrength: typeof parsed.settings?.motionStrength === 'string' ? parsed.settings.motionStrength : 'normal',
+        cornerRadius: Number(parsed.settings?.cornerRadius) || 22,
+        motionStrength: typeof parsed.settings?.motionStrength === 'string' ? parsed.settings.motionStrength : 'soft',
         visibleOnlyPlayback: parsed.settings?.visibleOnlyPlayback !== undefined ? Boolean(parsed.settings.visibleOnlyPlayback) : true,
+        squarePreviewFill: parsed.settings?.squarePreviewFill !== undefined ? Boolean(parsed.settings.squarePreviewFill) : true,
         showLibraryRootPath: parsed.settings?.showLibraryRootPath !== undefined ? Boolean(parsed.settings.showLibraryRootPath) : true,
         visibleModules: Array.isArray(parsed.settings?.visibleModules)
           ? parsed.settings.visibleModules
@@ -237,7 +242,240 @@ function settingsState() {
   const store = readStore()
   return {
     ...store.settings,
+    appVersion: app.getVersion(),
   }
+}
+
+async function checkForUpdates() {
+  const currentVersion = app.getVersion()
+
+  return {
+    success: true,
+    currentVersion,
+    latestVersion: '',
+    hasUpdate: false,
+    releaseUrl: '',
+    checkedAt: new Date().toISOString(),
+    message: '当前项目还未配置更新源，后续重新上传后再接入在线检查更新。',
+  }
+}
+
+function uePythonRequest(payload, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const client = net.createConnection({ host: uePythonHost, port: uePythonPort })
+    let buffer = ''
+    let settled = false
+
+    const finish = (data) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      client.destroy()
+      resolve(data)
+    }
+
+    const timer = setTimeout(() => {
+      finish({ ok: false, error: 'UE Python 服务连接超时。' })
+    }, timeoutMs)
+
+    client.setEncoding('utf8')
+    client.on('connect', () => {
+      client.write(`${JSON.stringify(payload)}\n`)
+    })
+    client.on('data', (chunk) => {
+      buffer += chunk
+      const lineEnd = buffer.indexOf('\n')
+      if (lineEnd === -1) {
+        return
+      }
+      const line = buffer.slice(0, lineEnd).trim()
+      try {
+        finish(JSON.parse(line))
+      } catch (error) {
+        finish({ ok: false, error: 'UE Python 服务返回了无效数据。' })
+      }
+    })
+    client.on('error', () => {
+      finish({ ok: false, error: 'UE Python 服务未连接。' })
+    })
+    client.on('close', () => {
+      if (!settled) {
+        finish({ ok: false, error: 'UE Python 服务已断开。' })
+      }
+    })
+  })
+}
+
+function uePythonBootstrapCode() {
+  return `exec(r'''
+import json, socketserver, threading, queue, time, traceback, contextlib, io, sys, types
+try:
+    import unreal
+except Exception:
+    unreal = None
+HOST = "127.0.0.1"
+PORT = 8765
+MODULE_NAME = "_dalong_ue_python_service"
+
+old_service = sys.modules.get(MODULE_NAME)
+if old_service and getattr(old_service, "server", None):
+    try:
+        old_service.server.shutdown()
+        old_service.server.server_close()
+    except Exception:
+        pass
+
+service = types.SimpleNamespace()
+service.tasks = queue.Queue()
+service.results = {}
+service.busy = False
+service.server = None
+sys.modules[MODULE_NAME] = service
+
+def _project_name():
+    try:
+        if unreal:
+            return unreal.Paths.get_base_filename(unreal.Paths.get_project_file_path())
+    except Exception:
+        pass
+    return ""
+
+def _engine_version():
+    try:
+        if unreal:
+            return unreal.SystemLibrary.get_engine_version()
+    except Exception:
+        pass
+    return ""
+
+def _execute(code, name):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    namespace = {"unreal": unreal, "__name__": "__dalong_remote__"}
+    start = time.time()
+    ok = True
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        try:
+            exec(code, namespace, namespace)
+        except Exception:
+            ok = False
+            stderr.write(traceback.format_exc())
+    if ok:
+        _refresh_editor()
+    return {
+        "ok": ok,
+        "scriptName": name,
+        "stdout": stdout.getvalue(),
+        "stderr": stderr.getvalue(),
+        "durationMs": int((time.time() - start) * 1000),
+    }
+
+def _refresh_editor():
+    if not unreal:
+        return
+    try:
+        if hasattr(unreal, "EditorLevelLibrary") and hasattr(unreal.EditorLevelLibrary, "editor_invalidate_viewports"):
+            unreal.EditorLevelLibrary.editor_invalidate_viewports()
+    except Exception:
+        pass
+    try:
+        subsystem_class = getattr(unreal, "LevelEditorSubsystem", None)
+        if subsystem_class:
+            subsystem = unreal.get_editor_subsystem(subsystem_class)
+            if subsystem and hasattr(subsystem, "editor_invalidate_viewports"):
+                subsystem.editor_invalidate_viewports()
+    except Exception:
+        pass
+    try:
+        if hasattr(unreal, "EditorLevelLibrary"):
+            world = unreal.EditorLevelLibrary.get_editor_world()
+            if world:
+                unreal.SystemLibrary.execute_console_command(world, "RedrawAllViewports")
+    except Exception:
+        pass
+
+def _tick(_delta):
+    if service.busy:
+        return
+    try:
+        request = service.tasks.get_nowait()
+    except queue.Empty:
+        return
+    service.busy = True
+    try:
+        result = _execute(request.get("code", ""), request.get("scriptName", "remote.py"))
+        result["requestId"] = request.get("requestId", "")
+        service.results[result["requestId"]] = result
+    finally:
+        service.busy = False
+
+if unreal:
+    try:
+        unreal.register_slate_post_tick_callback(_tick)
+    except Exception:
+        pass
+
+def _response(payload):
+    return (json.dumps(payload, ensure_ascii=False) + "\\n").encode("utf-8")
+
+class _ThreadingServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+class _Handler(socketserver.BaseRequestHandler):
+    def handle(self):
+        data = b""
+        while b"\\n" not in data:
+            chunk = self.request.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        try:
+            request = json.loads(data.decode("utf-8").strip() or "{}")
+        except Exception:
+            self.request.sendall(_response({"ok": False, "error": "请求数据不是有效 JSON。"}))
+            return
+        kind = request.get("type")
+        if kind == "ping" or kind == "get_status":
+            self.request.sendall(_response({"ok": True, "type": "pong", "busy": service.busy, "project": _project_name(), "engine": _engine_version()}))
+        elif kind == "execute_python":
+            request_id = request.get("requestId") or str(time.time())
+            service.tasks.put({"requestId": request_id, "scriptName": request.get("scriptName", "remote.py"), "code": request.get("code", "")})
+            if request.get("async"):
+                self.request.sendall(_response({"ok": True, "accepted": True, "requestId": request_id}))
+                return
+            deadline = time.time() + float(request.get("timeoutSec", 60))
+            while time.time() < deadline:
+                if request_id in service.results:
+                    self.request.sendall(_response(service.results.pop(request_id)))
+                    return
+                time.sleep(0.05)
+            self.request.sendall(_response({"ok": False, "requestId": request_id, "stderr": "执行超时", "durationMs": int(float(request.get("timeoutSec", 60)) * 1000)}))
+        elif kind == "get_result":
+            request_id = request.get("requestId", "")
+            if request_id in service.results:
+                self.request.sendall(_response({"ok": True, "done": True, "result": service.results.pop(request_id)}))
+            else:
+                self.request.sendall(_response({"ok": True, "done": False, "busy": service.busy}))
+        elif kind == "shutdown":
+            self.request.sendall(_response({"ok": True, "message": "UE Python 服务已停止。"}))
+            threading.Thread(target=service.server.shutdown, daemon=True).start()
+        else:
+            self.request.sendall(_response({"ok": False, "error": "未知请求类型。"}))
+
+def _serve():
+    service.server = _ThreadingServer((HOST, PORT), _Handler)
+    print("大龙工具 Python 服务已打开：%s:%s" % (HOST, PORT))
+    try:
+        service.server.serve_forever(poll_interval=0.2)
+    finally:
+        service.server.server_close()
+        print("大龙工具 Python 服务已关闭")
+
+threading.Thread(target=_serve, daemon=True).start()
+''')`
 }
 
 function firstExistingPath(paths) {
@@ -269,6 +507,12 @@ const assetLibraryTypes = {
     label: '工程',
     folderNames: ['工程', 'Project', 'Projects', 'project', 'projects'],
   },
+}
+
+const nodeSnippetCategories = {
+  blueprint: { label: '蓝图', folderNames: ['蓝图', 'Blueprint', 'Blueprints', 'blueprint', 'blueprints'] },
+  material: { label: '材质', folderNames: ['材质', 'Material', 'Materials', 'material', 'materials'] },
+  effect: { label: '特效', folderNames: ['特效', 'Effect', 'Effects', 'VFX', 'vfx', 'effect', 'effects'] },
 }
 
 function unrealAssetRootPath(resourceRootPath) {
@@ -321,6 +565,30 @@ function preferredAssetTypeRootPath(resourceRootPath, type) {
   return assetRoot ? path.join(assetRoot, typeMeta.label) : ''
 }
 
+function nodeSnippetRootPath(resourceRootPath, category) {
+  const nodeRoot = assetTypeRootPath(resourceRootPath, 'node') || preferredAssetTypeRootPath(resourceRootPath, 'node')
+  const meta = nodeSnippetCategories[category] || nodeSnippetCategories.blueprint
+  if (!nodeRoot) {
+    return ''
+  }
+  return firstExistingPath(meta.folderNames.map((folderName) => path.join(nodeRoot, folderName))) || path.join(nodeRoot, meta.label)
+}
+
+function ensureNodeSnippetDirectory(resourceRootPath, category) {
+  const nodeRoot = assetTypeRootPath(resourceRootPath, 'node') || preferredAssetTypeRootPath(resourceRootPath, 'node')
+  if (!nodeRoot) {
+    return ''
+  }
+  fs.mkdirSync(nodeRoot, { recursive: true })
+  Object.keys(nodeSnippetCategories).forEach((key) => {
+    const meta = nodeSnippetCategories[key]
+    fs.mkdirSync(path.join(nodeRoot, meta.label), { recursive: true })
+  })
+  const targetDir = nodeSnippetRootPath(resourceRootPath, category)
+  fs.mkdirSync(targetDir, { recursive: true })
+  return targetDir
+}
+
 function ensureUnrealAssetDirectories(resourceRootPath) {
   const assetRoot = unrealAssetRootPath(resourceRootPath) || preferredUnrealAssetRootPath(resourceRootPath)
   if (!assetRoot) {
@@ -342,17 +610,78 @@ function findPreviewFiles(folderPath) {
       .map((entry) => entry.name)
 
     const videoFile = files.find((fileName) => /\.(mp4|webm|mov|m4v)$/i.test(fileName)) || ''
+    const imageFile = files.find((fileName) => /\.(jpe?g|png|webp|gif|bmp)$/i.test(fileName)) || ''
     const packageFile = files.find((fileName) => /\.(zip|7z|rar)$/i.test(fileName)) || ''
+    const pythonFiles = files.filter((fileName) => /\.py$/i.test(fileName))
 
     return {
       videoPath: videoFile ? path.join(folderPath, videoFile) : '',
+      imagePath: imageFile ? path.join(folderPath, imageFile) : '',
       packagePath: packageFile ? path.join(folderPath, packageFile) : '',
+      pythonFiles: pythonFiles.map((fileName) => ({
+        name: fileName,
+        path: path.join(folderPath, fileName),
+      })),
     }
   } catch (error) {
     return {
       videoPath: '',
+      imagePath: '',
       packagePath: '',
+      pythonFiles: [],
     }
+  }
+}
+
+function normalizeUeVersionName(value) {
+  const match = String(value || '').match(/(?:UE\s*)?(\d+(?:\.\d+)?)/i)
+  return match?.[1] ? `UE${match[1]}` : ''
+}
+
+function displayUeVersionName(value) {
+  const normalized = normalizeUeVersionName(value)
+  return normalized || ''
+}
+
+function versionFromPackageName(fileName) {
+  const baseName = path.basename(String(fileName || ''), path.extname(String(fileName || '')))
+  const match = baseName.match(/(?:UE\s*)?(\d+(?:\.\d+)?)/i)
+  return match?.[1] ? `UE${match[1]}` : ''
+}
+
+function pluginVersionPackages(folderPath) {
+  try {
+    const entries = fs.readdirSync(folderPath, { withFileTypes: true })
+    const flatPackages = entries
+      .filter((entry) => entry.isFile() && /\.(zip|7z|rar)$/i.test(entry.name))
+      .map((entry) => {
+        const version = versionFromPackageName(entry.name)
+        if (!version) {
+          return null
+        }
+        return { version, folderPath, packagePath: path.join(folderPath, entry.name) }
+      })
+      .filter(Boolean)
+
+    const folderPackages = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const version = normalizeUeVersionName(entry.name)
+        if (!version || flatPackages.some((item) => item.version === version)) {
+          return null
+        }
+        const versionPath = path.join(folderPath, entry.name)
+        const previewFiles = findPreviewFiles(versionPath)
+        return previewFiles.packagePath
+          ? { version, folderPath: versionPath, packagePath: previewFiles.packagePath }
+          : null
+      })
+      .filter(Boolean)
+
+    return [...flatPackages, ...folderPackages]
+      .sort((left, right) => left.version.localeCompare(right.version, 'zh-CN', { numeric: true }))
+  } catch (error) {
+    return []
   }
 }
 
@@ -415,12 +744,45 @@ function assetLibraryState(type = 'blueprint') {
   }
 
   try {
-    const folders = fs
-      .readdirSync(libraryRoot, { withFileTypes: true })
+    const libraryEntries = fs.readdirSync(libraryRoot, { withFileTypes: true })
+    const rootPythonFiles = typeKey === 'script'
+      ? libraryEntries
+          .filter((entry) => entry.isFile() && /\.py$/i.test(entry.name))
+          .map((entry) => ({
+            name: entry.name,
+            path: path.join(libraryRoot, entry.name),
+          }))
+      : []
+
+    const rootScriptItems = rootPythonFiles.map((file) => ({
+      name: path.basename(file.name, path.extname(file.name)),
+      type: typeKey,
+      label: typeMeta.label,
+      folderPath: libraryRoot,
+      videoPath: '',
+      videoUrl: '',
+      imagePath: '',
+      imageUrl: '',
+      packagePath: file.path,
+      pluginVersions: [],
+      pythonFiles: [file],
+      mainScriptPath: file.path,
+      hasInitScript: /^init_unreal\.py$/i.test(file.name),
+      hasVideo: false,
+      hasImage: false,
+      hasPackage: true,
+    }))
+
+    const folders = libraryEntries
       .filter((entry) => entry.isDirectory())
       .map((entry) => {
         const folderPath = path.join(libraryRoot, entry.name)
         const previewFiles = findPreviewFiles(folderPath)
+        const pluginVersions = typeKey === 'plugin' ? pluginVersionPackages(folderPath) : []
+        const pythonFiles = typeKey === 'script' ? previewFiles.pythonFiles : []
+        const fallbackPackagePath = typeKey === 'script'
+          ? (pythonFiles[0]?.path || '')
+          : (previewFiles.packagePath || pluginVersions[0]?.packagePath || '')
         return {
           name: entry.name,
           type: typeKey,
@@ -428,12 +790,20 @@ function assetLibraryState(type = 'blueprint') {
           folderPath,
           videoPath: previewFiles.videoPath,
           videoUrl: previewFiles.videoPath ? pathToFileURL(previewFiles.videoPath).href : '',
-          packagePath: previewFiles.packagePath,
+          imagePath: previewFiles.imagePath,
+          imageUrl: previewFiles.imagePath ? pathToFileURL(previewFiles.imagePath).href : '',
+          packagePath: fallbackPackagePath,
+          pluginVersions,
+          pythonFiles,
+          mainScriptPath: pythonFiles.find((file) => /^init_unreal\.py$/i.test(file.name))?.path || pythonFiles[0]?.path || '',
+          hasInitScript: pythonFiles.some((file) => /^init_unreal\.py$/i.test(file.name)),
           hasVideo: Boolean(previewFiles.videoPath),
-          hasPackage: Boolean(previewFiles.packagePath),
+          hasImage: Boolean(previewFiles.imagePath),
+          hasPackage: Boolean(fallbackPackagePath),
         }
       })
       .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+    const items = [...rootScriptItems, ...folders].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
 
     return {
       type: typeKey,
@@ -441,8 +811,8 @@ function assetLibraryState(type = 'blueprint') {
       resourceRootPath: settings.resourceRootPath,
       unrealRoot,
       libraryRoot,
-      items: folders,
-      message: folders.length ? `已读取 ${folders.length} 个${typeMeta.label}资源文件夹。` : `${typeMeta.label}目录存在，但还没有可用资源。`,
+      items,
+      message: items.length ? `已读取 ${items.length} 个${typeMeta.label}资源。` : `${typeMeta.label}目录存在，但还没有可用资源。`,
     }
   } catch (error) {
     return {
@@ -457,16 +827,12 @@ function assetLibraryState(type = 'blueprint') {
   }
 }
 
-function blueprintLibraryState() {
-  return assetLibraryState('blueprint')
-}
-
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 820,
-    minWidth: 1040,
-    minHeight: 680,
+    width: 1200,
+    height: 760,
+    minWidth: 980,
+    minHeight: 640,
     backgroundColor: '#111111',
     frame: false,
     transparent: false,
@@ -479,6 +845,24 @@ function createWindow() {
       nodeIntegration: false,
       preload: path.join(__dirname, 'preload.js'),
     },
+  })
+
+  mainWindow.on('unresponsive', () => {
+    console.error('[electron] main window became unresponsive')
+  })
+
+  mainWindow.on('responsive', () => {
+    console.info('[electron] main window became responsive again')
+  })
+
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    console.error('[electron] renderer process gone', details)
+  })
+
+  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    if (level >= 2) {
+      console.warn(`[renderer:${level}] ${message} (${sourceId}:${line})`)
+    }
   })
 
   mainWindow.loadFile(path.join(__dirname, 'app.html'))
@@ -594,8 +978,291 @@ ipcMain.handle('settings:get', () => {
   return settingsState()
 })
 
-ipcMain.handle('library:get-blueprints', () => {
-  return blueprintLibraryState()
+ipcMain.handle('settings:check-update', async () => {
+  try {
+    return await checkForUpdates()
+  } catch (error) {
+    return {
+      success: false,
+      currentVersion: app.getVersion(),
+      latestVersion: '',
+      hasUpdate: false,
+      releaseUrl: '',
+      checkedAt: new Date().toISOString(),
+      message: `检查更新失败：${error.message || '未知错误'}`,
+    }
+  }
+})
+
+ipcMain.handle('ue-python:get-bootstrap-code', () => {
+  return {
+    success: true,
+    host: uePythonHost,
+    port: uePythonPort,
+    code: uePythonBootstrapCode(),
+  }
+})
+
+ipcMain.handle('ue-python:ping', async () => {
+  const result = await uePythonRequest({ type: 'ping' }, 2500)
+  return {
+    success: Boolean(result?.ok),
+    host: uePythonHost,
+    port: uePythonPort,
+    ...result,
+  }
+})
+
+ipcMain.handle('ue-python:execute', async (event, data) => {
+  const code = String(data?.code || '')
+  const scriptName = String(data?.scriptName || 'remote.py')
+  if (!code.trim()) {
+    return { success: false, ok: false, error: '脚本内容为空。' }
+  }
+
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const result = await uePythonRequest({
+    type: 'execute_python',
+    requestId,
+    scriptName,
+    code,
+    async: true,
+  }, 5000)
+
+  return {
+    success: Boolean(result?.ok),
+    ...result,
+  }
+})
+
+ipcMain.handle('ue-python:get-result', async (event, requestId) => {
+  if (!requestId) {
+    return { success: false, ok: false, error: '缺少执行请求 ID。' }
+  }
+
+  const result = await uePythonRequest({
+    type: 'get_result',
+    requestId,
+  }, 3000)
+
+  return {
+    success: Boolean(result?.ok),
+    ...result,
+  }
+})
+
+ipcMain.handle('ue-python:shutdown', async () => {
+  const result = await uePythonRequest({ type: 'shutdown' }, 2500)
+  return {
+    success: Boolean(result?.ok),
+    ...result,
+  }
+})
+
+ipcMain.handle('library:read-script-file', async (event, filePath) => {
+  if (!filePath || !fs.existsSync(filePath) || !/\.py$/i.test(filePath)) {
+    return { success: false, error: '未找到可执行的 Python 脚本。' }
+  }
+
+  try {
+    const code = await fs.promises.readFile(filePath, 'utf8')
+    return { success: true, code, name: path.basename(filePath), path: filePath }
+  } catch (error) {
+    return { success: false, error: `读取脚本失败：${error.message || '未知错误'}` }
+  }
+})
+
+ipcMain.handle('library:save-script-file', async (event, data) => {
+  const filePath = data?.filePath || ''
+  const code = String(data?.code ?? '')
+  const createNew = Boolean(data?.createNew)
+  if (!createNew && (!filePath || !fs.existsSync(filePath) || !/\.py$/i.test(filePath))) {
+    return { success: false, error: '未找到可保存的 Python 脚本。' }
+  }
+
+  try {
+    const settings = settingsState()
+    if (createNew && !settings.resourceRootPath) {
+      return { success: false, error: '请先在设置中选择资源根目录。' }
+    }
+
+    const parentDir = createNew
+      ? (assetTypeRootPath(settings.resourceRootPath, 'script') || preferredAssetTypeRootPath(settings.resourceRootPath, 'script'))
+      : path.dirname(filePath)
+    if (!parentDir) {
+      return { success: false, error: '未找到脚本资源目录。' }
+    }
+    await fs.promises.mkdir(parentDir, { recursive: true })
+
+    const currentName = createNew ? '新建脚本' : path.basename(filePath, '.py')
+    const nextBaseName = sanitizeResourceName(String(data?.nextName || currentName).replace(/\.py$/i, ''))
+    if (!nextBaseName) {
+      return { success: false, error: '脚本名称不能为空。' }
+    }
+
+    const targetPath = createNew ? uniqueScriptFilePath(parentDir, nextBaseName) : path.join(parentDir, `${nextBaseName}.py`)
+    const samePath = targetPath.toLowerCase() === filePath.toLowerCase()
+    if (!createNew && !samePath && fs.existsSync(targetPath)) {
+      return { success: false, error: '同目录下已经存在同名脚本。' }
+    }
+
+    await fs.promises.writeFile(createNew ? targetPath : filePath, code, 'utf8')
+    if (!createNew && !samePath) {
+      await fs.promises.rename(filePath, targetPath)
+    }
+
+    return { success: true, path: targetPath, name: path.basename(targetPath) }
+  } catch (error) {
+    return { success: false, error: `保存脚本失败：${error.message || '未知错误'}` }
+  }
+})
+
+ipcMain.handle('library:delete-script-file', async (event, filePath) => {
+  if (!filePath || !fs.existsSync(filePath) || !/\.py$/i.test(filePath)) {
+    return { success: false, error: '未找到要删除的 Python 脚本。' }
+  }
+
+  try {
+    const parentDir = path.dirname(filePath)
+    const scriptRoot = assetTypeRootPath(settingsState().resourceRootPath, 'script') || preferredAssetTypeRootPath(settingsState().resourceRootPath, 'script')
+    await fs.promises.rm(filePath, { force: true })
+
+    if (scriptRoot && parentDir.toLowerCase() !== scriptRoot.toLowerCase()) {
+      const remaining = fs.existsSync(parentDir) ? await fs.promises.readdir(parentDir) : []
+      if (remaining.length === 0) {
+        await fs.promises.rm(parentDir, { recursive: true, force: true })
+      }
+    }
+
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: `删除脚本失败：${error.message || '未知错误'}` }
+  }
+})
+
+ipcMain.handle('library:get-node-snippets', async (event, category) => {
+  const categoryKey = nodeSnippetCategories[category] ? category : 'blueprint'
+  const settings = settingsState()
+  if (!settings.resourceRootPath) {
+    return { success: false, items: [], libraryRoot: '', message: '请先在设置中选择资源根目录。' }
+  }
+
+  try {
+    const libraryRoot = ensureNodeSnippetDirectory(settings.resourceRootPath, categoryKey)
+    const entries = await fs.promises.readdir(libraryRoot, { withFileTypes: true })
+    const items = entries
+      .filter((entry) => entry.isFile() && /\.json$/i.test(entry.name))
+      .map((entry) => ({
+        name: path.basename(entry.name, path.extname(entry.name)),
+        fileName: entry.name,
+        path: path.join(libraryRoot, entry.name),
+        category: categoryKey,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN', { numeric: true }))
+    const label = nodeSnippetCategories[categoryKey].label
+    return {
+      success: true,
+      items,
+      libraryRoot,
+      message: items.length ? `已读取 ${items.length} 个${label}节点。` : `${label}分类还没有节点片段。`,
+    }
+  } catch (error) {
+    return { success: false, items: [], libraryRoot: '', message: `读取节点片段失败：${error.message || '未知错误'}` }
+  }
+})
+
+ipcMain.handle('library:read-node-snippet', async (event, filePath) => {
+  if (!filePath || !fs.existsSync(filePath) || !/\.json$/i.test(filePath)) {
+    return { success: false, error: '未找到节点片段文件。' }
+  }
+
+  try {
+    const content = await fs.promises.readFile(filePath, 'utf8')
+    return { success: true, content, name: path.basename(filePath, '.json'), path: filePath }
+  } catch (error) {
+    return { success: false, error: `读取节点片段失败：${error.message || '未知错误'}` }
+  }
+})
+
+ipcMain.handle('library:save-node-snippet', async (event, data) => {
+  const categoryKey = nodeSnippetCategories[data?.category] ? data.category : 'blueprint'
+  const filePath = data?.filePath || ''
+  const content = String(data?.content ?? '')
+  const createNew = Boolean(data?.createNew)
+  if (!createNew && (!filePath || !fs.existsSync(filePath) || !/\.json$/i.test(filePath))) {
+    return { success: false, error: '未找到可保存的节点片段。' }
+  }
+
+  try {
+    const settings = settingsState()
+    if (!settings.resourceRootPath) {
+      return { success: false, error: '请先在设置中选择资源根目录。' }
+    }
+    const parentDir = createNew ? ensureNodeSnippetDirectory(settings.resourceRootPath, categoryKey) : path.dirname(filePath)
+    const currentName = createNew ? '新建节点' : path.basename(filePath, '.json')
+    const nextBaseName = sanitizeResourceName(String(data?.nextName || currentName).replace(/\.json$/i, ''))
+    if (!nextBaseName) {
+      return { success: false, error: '节点名称不能为空。' }
+    }
+
+    const targetPath = createNew ? uniqueJsonFilePath(parentDir, nextBaseName) : path.join(parentDir, `${nextBaseName}.json`)
+    const samePath = targetPath.toLowerCase() === filePath.toLowerCase()
+    if (!createNew && !samePath && fs.existsSync(targetPath)) {
+      return { success: false, error: '同目录下已经存在同名节点。' }
+    }
+
+    await fs.promises.writeFile(createNew ? targetPath : filePath, content, 'utf8')
+    if (!createNew && !samePath) {
+      await fs.promises.rename(filePath, targetPath)
+    }
+
+    return { success: true, path: targetPath, name: path.basename(targetPath) }
+  } catch (error) {
+    return { success: false, error: `保存节点片段失败：${error.message || '未知错误'}` }
+  }
+})
+
+ipcMain.handle('library:delete-node-snippet', async (event, filePath) => {
+  if (!filePath || !fs.existsSync(filePath) || !/\.json$/i.test(filePath)) {
+    return { success: false, error: '未找到要删除的节点片段。' }
+  }
+
+  try {
+    await fs.promises.rm(filePath, { force: true })
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: `删除节点片段失败：${error.message || '未知错误'}` }
+  }
+})
+
+ipcMain.handle('library:copy-node-snippet', async (event, filePath) => {
+  if (!filePath || !fs.existsSync(filePath) || !/\.json$/i.test(filePath)) {
+    return { success: false, error: '未找到节点片段文件。' }
+  }
+
+  try {
+    const content = await fs.promises.readFile(filePath, 'utf8')
+    clipboard.writeText(content)
+    return { success: true, name: path.basename(filePath, '.json') }
+  } catch (error) {
+    return { success: false, error: `复制节点片段失败：${error.message || '未知错误'}` }
+  }
+})
+
+ipcMain.handle('library:open-node-directory', async (event, category) => {
+  const categoryKey = nodeSnippetCategories[category] ? category : 'blueprint'
+  const settings = settingsState()
+  if (!settings.resourceRootPath) {
+    return { success: false, error: '请先在设置中选择资源根目录。' }
+  }
+
+  try {
+    const libraryRoot = ensureNodeSnippetDirectory(settings.resourceRootPath, categoryKey)
+    shell.openPath(libraryRoot)
+    return { success: true, path: libraryRoot }
+  } catch (error) {
+    return { success: false, error: `打开节点目录失败：${error.message || '未知错误'}` }
+  }
 })
 
 ipcMain.handle('library:get-assets', (event, type) => {
@@ -675,21 +1342,32 @@ ipcMain.handle('library:delete-asset', async (event, data) => {
   }
 
   try {
-    await shell.trashItem(folderPath)
+    await Promise.race([
+      shell.trashItem(folderPath),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('移到回收站超时')), 4500)),
+    ])
     return { success: true }
   } catch (error) {
-    return { success: false, error: `移到回收站失败：${error.message || '未知错误'}` }
+    try {
+      await delay(500)
+      await removeDirWithRetry(folderPath)
+      return { success: true }
+    } catch (removeError) {
+      const reason = removeError.message || error.message || '未知错误'
+      return { success: false, error: `删除失败：${reason}。请关闭正在预览或占用该资源的程序后再试。` }
+    }
   }
 })
 
 ipcMain.handle('library:choose-asset-file', async (event, kind) => {
   const isVideo = kind === 'video'
+  const isPluginPackages = kind === 'plugin-packages'
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: isVideo ? '选择预览视频' : '选择资源压缩包',
-    properties: ['openFile'],
+    title: isVideo ? '选择预览文件' : isPluginPackages ? '选择插件压缩包' : '选择资源压缩包',
+    properties: isPluginPackages ? ['openFile', 'multiSelections'] : ['openFile'],
     filters: [
       isVideo
-        ? { name: 'Video', extensions: ['mp4', 'webm', 'mov', 'm4v'] }
+        ? { name: 'Preview', extensions: ['mp4', 'webm', 'mov', 'm4v', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }
         : { name: 'Archive', extensions: ['zip', '7z', 'rar'] },
     ],
   })
@@ -698,13 +1376,26 @@ ipcMain.handle('library:choose-asset-file', async (event, kind) => {
     return { success: false, cancelled: true }
   }
 
+  if (isPluginPackages) {
+    return {
+      success: true,
+      files: result.filePaths.map((filePath) => ({
+        name: path.basename(filePath),
+        path: filePath,
+        version: versionFromPackageName(filePath),
+      })),
+    }
+  }
+
   const filePath = result.filePaths[0]
+  const isImage = /\.(jpe?g|png|webp|gif|bmp)$/i.test(filePath)
   return {
     success: true,
     file: {
       name: path.basename(filePath),
       path: filePath,
       url: isVideo ? pathToFileURL(filePath).href : '',
+      isImage,
     },
   }
 })
@@ -723,32 +1414,78 @@ ipcMain.handle('library:create-asset', async (event, data) => {
 
   const videoPath = data?.videoPath || ''
   const packagePath = data?.packagePath || ''
+  const pluginVersion = displayUeVersionName(data?.pluginVersion || '')
+  const pluginPackages = Array.isArray(data?.pluginPackages)
+    ? data.pluginPackages
+        .map((entry) => ({
+          version: displayUeVersionName(entry?.version || versionFromPackageName(entry?.path || '')),
+          path: entry?.path || '',
+        }))
+        .filter((entry) => entry.version && entry.path && fs.existsSync(entry.path))
+    : []
   const hasVideo = videoPath && fs.existsSync(videoPath)
   const hasPackage = packagePath && fs.existsSync(packagePath)
-  if (!hasVideo && !hasPackage) {
+  const hasPluginPackages = pluginPackages.length > 0
+  if (!hasVideo && !hasPackage && !hasPluginPackages) {
     return { success: false, error: '请至少拖入预览视频或压缩包。' }
   }
 
-  if (hasVideo && !/\.(mp4|webm|mov|m4v)$/i.test(videoPath)) {
-    return { success: false, error: '预览视频仅支持 mp4、webm、mov、m4v。' }
+  if (typeKey === 'plugin' && !hasPluginPackages && !hasPackage) {
+    return { success: false, error: '请至少选择一个插件压缩包。' }
+  }
+
+  if (typeKey === 'plugin' && !hasPluginPackages && !pluginVersion) {
+    return { success: false, error: '请选择插件适配的引擎版本。' }
+  }
+
+  if (hasVideo && !/\.(mp4|webm|mov|m4v|jpe?g|png|webp|gif|bmp)$/i.test(videoPath)) {
+    return { success: false, error: '预览文件仅支持图片、mp4、webm、mov、m4v。' }
   }
   if (hasPackage && !/\.(zip|7z|rar)$/i.test(packagePath)) {
     return { success: false, error: '压缩包仅支持 zip、7z、rar。' }
   }
+  const invalidPluginPackage = pluginPackages.find((entry) => !/\.(zip|7z|rar)$/i.test(entry.path))
+  if (invalidPluginPackage) {
+    return { success: false, error: `${invalidPluginPackage.version} 的压缩包仅支持 zip、7z、rar。` }
+  }
 
   const targetRoot = preferredAssetTypeRootPath(settings.resourceRootPath, typeKey)
   const targetDir = path.join(targetRoot, name)
-  if (fs.existsSync(targetDir)) {
+  if (typeKey !== 'plugin' && fs.existsSync(targetDir)) {
     return { success: false, error: '同名资产已存在，请换一个名称。' }
+  }
+  if (typeKey === 'plugin' && hasPluginPackages) {
+    const duplicatedVersion = pluginPackages.find((entry) => pluginVersionPackages(targetDir).some((item) => item.version === entry.version))
+    if (duplicatedVersion) {
+      return { success: false, error: `${duplicatedVersion.version} 插件包已存在，请移除列表中的重复版本。` }
+    }
   }
 
   try {
     fs.mkdirSync(targetDir, { recursive: true })
-    await copyAssetFile(videoPath, targetDir, 'preview')
-    await copyAssetFile(packagePath, targetDir, 'package')
+    await copyAssetFile(videoPath, targetDir, name)
+    if (typeKey === 'plugin') {
+      const packagesToSave = hasPluginPackages ? pluginPackages : [{ version: pluginVersion, path: packagePath }]
+      for (const pluginPackage of packagesToSave) {
+        const sourceName = path.basename(pluginPackage.path)
+        const targetPackagePath = path.join(targetDir, sourceName)
+        await fs.promises.copyFile(pluginPackage.path, targetPackagePath)
+      }
+    } else {
+      await copyAssetFile(packagePath, targetDir, 'Content')
+    }
     return { success: true, targetPath: targetDir, library: assetLibraryState(typeKey) }
   } catch (error) {
-    removeDirRecursive(targetDir)
+    if (typeKey === 'plugin' && fs.existsSync(targetDir)) {
+      for (const pluginPackage of pluginPackages) {
+        const copiedPath = path.join(targetDir, path.basename(pluginPackage.path))
+        if (fs.existsSync(copiedPath)) {
+          fs.rmSync(copiedPath, { force: true })
+        }
+      }
+    } else {
+      removeDirRecursive(targetDir)
+    }
     return { success: false, error: `创建资产失败：${error.message || '未知错误'}` }
   }
 })
@@ -789,11 +1526,12 @@ ipcMain.handle('settings:save-all', (event, nextSettings) => {
     resourceRootPath: String(nextSettings?.resourceRootPath || '').trim(),
     defaultPage: String(nextSettings?.defaultPage || 'home'),
     defaultCardColumns: Math.min(5, Math.max(2, Number(nextSettings?.defaultCardColumns) || 5)),
-    cornerRadius: Math.min(36, Math.max(12, Number(nextSettings?.cornerRadius) || 28)),
+    cornerRadius: Math.min(32, Math.max(10, Number(nextSettings?.cornerRadius) || 22)),
     motionStrength: ['soft', 'normal', 'strong'].includes(String(nextSettings?.motionStrength))
       ? String(nextSettings.motionStrength)
-      : 'normal',
+      : 'soft',
     visibleOnlyPlayback: Boolean(nextSettings?.visibleOnlyPlayback),
+    squarePreviewFill: Boolean(nextSettings?.squarePreviewFill),
     showLibraryRootPath: nextSettings?.showLibraryRootPath !== false,
     visibleModules: Array.isArray(nextSettings?.visibleModules)
       ? nextSettings.visibleModules.filter((id) => ['ae', '3dmax', 'blender', 'c4d', 'maya', 'ps'].includes(id))
@@ -840,6 +1578,114 @@ function findContentFolder(rootDir, maxDepth = 3) {
     return ''
   }
   return search(rootDir, 0)
+}
+
+function findPluginRootFolder(rootDir, maxDepth = 4) {
+  function search(dir, depth) {
+    if (depth > maxDepth) {
+      return ''
+    }
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true })
+      if (entries.some((entry) => entry.isFile() && /\.uplugin$/i.test(entry.name))) {
+        return dir
+      }
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const found = search(path.join(dir, entry.name), depth + 1)
+          if (found) {
+            return found
+          }
+        }
+      }
+    } catch (error) {
+      // 忽略不可访问的目录
+    }
+    return ''
+  }
+  return search(rootDir, 0)
+}
+
+function inspectPluginPackage(rootDir) {
+  const pluginRoot = findPluginRootFolder(rootDir)
+  if (!pluginRoot) {
+    return {
+      ok: false,
+      pluginRoot: '',
+      issues: ['未找到 .uplugin 文件'],
+      flags: {
+        hasUplugin: false,
+        hasBinaries: false,
+        hasContent: false,
+        hasResources: false,
+        hasConfig: false,
+      },
+    }
+  }
+
+  const flags = {
+    hasUplugin: true,
+    hasBinaries: fs.existsSync(path.join(pluginRoot, 'Binaries')),
+    hasContent: fs.existsSync(path.join(pluginRoot, 'Content')),
+    hasResources: fs.existsSync(path.join(pluginRoot, 'Resources')),
+    hasConfig: fs.existsSync(path.join(pluginRoot, 'Config')),
+  }
+
+  const issues = []
+  if (!flags.hasBinaries && !flags.hasContent) {
+    issues.push('缺少 Binaries 或 Content 目录')
+  }
+
+  return {
+    ok: issues.length === 0,
+    pluginRoot,
+    issues,
+    flags,
+  }
+}
+
+async function extractArchiveToTemp(packagePath, event, label = '资源包') {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ue-import-'))
+  try {
+    event.sender.send('import:progress', { stage: 'extracting', message: `正在解压${label}...`, current: 0, total: 0, percent: -1 })
+    const ext = path.extname(packagePath).toLowerCase()
+
+    if (ext === '.zip') {
+      const AdmZip = require('adm-zip')
+      const zip = new AdmZip(packagePath)
+      zip.extractAllTo(tempDir, true)
+    } else if (ext === '.7z' || ext === '.rar') {
+      const { execFile } = require('child_process')
+      const sevenZip = require('7zip-bin')
+      const sevenZipPath = sevenZip.path7za || sevenZip.path7x || sevenZip.path7zz
+      if (!sevenZipPath || !fs.existsSync(sevenZipPath)) {
+        throw new Error('未找到 7z 解压工具，无法解压 7z/rar 文件。')
+      }
+
+      await new Promise((resolve, reject) => {
+        execFile(
+          sevenZipPath,
+          ['x', packagePath, `-o${tempDir}`, '-y'],
+          { encoding: 'utf8', windowsHide: true, maxBuffer: 30 * 1024 * 1024 },
+          (error, stdout, stderr) => {
+            if (error) {
+              const detail = (stderr || stdout || error.message || '').trim()
+              reject(new Error(detail || '7z 解压工具返回失败。'))
+              return
+            }
+            resolve()
+          }
+        )
+      })
+    } else {
+      throw new Error('压缩包仅支持 zip、7z、rar。')
+    }
+
+    return tempDir
+  } catch (error) {
+    removeDirRecursive(tempDir)
+    throw error
+  }
 }
 
 /**
@@ -953,6 +1799,24 @@ function removeDirRecursive(dirPath) {
   }
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function removeDirWithRetry(dirPath, attempts = 8) {
+  let lastError = null
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      await fs.promises.rm(dirPath, { recursive: true, force: true, maxRetries: 2, retryDelay: 160 })
+      return
+    } catch (error) {
+      lastError = error
+      await delay(220 + index * 180)
+    }
+  }
+  throw lastError || new Error('删除失败')
+}
+
 async function copyDirRecursive(sourceDir, targetDir) {
   await fs.promises.mkdir(targetDir, { recursive: true })
   const entries = await fs.promises.readdir(sourceDir, { withFileTypes: true })
@@ -978,6 +1842,28 @@ function uniqueResourcePath(parentDir, baseName) {
   let index = 2
   while (fs.existsSync(targetPath)) {
     targetPath = path.join(parentDir, `${cleanName}-${index}`)
+    index += 1
+  }
+  return targetPath
+}
+
+function uniqueScriptFilePath(parentDir, baseName) {
+  const cleanName = sanitizeResourceName(String(baseName || '').replace(/\.py$/i, '')) || '新建脚本'
+  let targetPath = path.join(parentDir, `${cleanName}.py`)
+  let index = 2
+  while (fs.existsSync(targetPath)) {
+    targetPath = path.join(parentDir, `${cleanName}-${index}.py`)
+    index += 1
+  }
+  return targetPath
+}
+
+function uniqueJsonFilePath(parentDir, baseName) {
+  const cleanName = sanitizeResourceName(String(baseName || '').replace(/\.json$/i, '')) || '新建节点'
+  let targetPath = path.join(parentDir, `${cleanName}.json`)
+  let index = 2
+  while (fs.existsSync(targetPath)) {
+    targetPath = path.join(parentDir, `${cleanName}-${index}.json`)
     index += 1
   }
   return targetPath
@@ -1023,32 +1909,8 @@ ipcMain.handle('library:prepare-import', async (event, data) => {
 
   let tempDir = ''
   try {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ue-import-'))
-    event.sender.send('import:progress', { stage: 'extracting', message: '正在解压资源包...', current: 0, total: 0, percent: -1 })
-    const { execFile } = require('child_process')
-    const powershellExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-    const safePackagePath = packagePath.replace(/'/g, "''")
-    const safeTempDir = tempDir.replace(/'/g, "''")
-    const psScript = `try { Expand-Archive -LiteralPath '${safePackagePath}' -DestinationPath '${safeTempDir}' -Force -ErrorAction Stop; [Console]::Out.WriteLine('EXTRACT_SUCCESS') } catch { [Console]::Out.WriteLine('EXTRACT_ERROR:' + $_.Exception.Message) }`
-    const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64')
-    await new Promise((resolve, reject) => {
-      execFile(powershellExe, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedCommand], { encoding: 'utf8', windowsHide: true, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-        const out = (stdout || '').trim()
-        if (out.includes('EXTRACT_ERROR:')) {
-          reject(new Error(out.split('EXTRACT_ERROR:')[1].trim()))
-        } else if (out.includes('EXTRACT_SUCCESS')) {
-          resolve()
-        } else if (error) {
-          reject(new Error(stderr || error.message))
-        } else {
-          resolve()
-        }
-      })
-    })
+    tempDir = await extractArchiveToTemp(packagePath, event, '资源包')
   } catch (error) {
-    if (tempDir) {
-      removeDirRecursive(tempDir)
-    }
     const errorMsg = `解压失败：${error.message || '未知错误'}`
     event.sender.send('import:progress', { stage: 'error', message: errorMsg })
     return { ...emptyResult, error: errorMsg }
@@ -1157,6 +2019,79 @@ ipcMain.handle('library:execute-import', async (event, data) => {
     const errorMsg = `导入失败：${error.message || '未知错误'}`
     event.sender.send('import:progress', { stage: 'error', message: errorMsg })
     return { success: false, importedCount: 0, skippedCount: 0, error: errorMsg }
+  }
+})
+
+ipcMain.handle('library:prepare-plugin-import', async (event, data) => {
+  importCancelled = false
+  const projectPath = data?.projectPath || ''
+  const projectVersion = normalizeUeVersionName(data?.projectVersion || '')
+  const pluginVersions = Array.isArray(data?.pluginVersions) ? data.pluginVersions : []
+  const fallbackPackagePath = data?.packagePath || ''
+
+  const emptyResult = {
+    success: false,
+    tempDir: '',
+    contentDir: '',
+    targetContentDir: '',
+    conflicts: [],
+    totalFiles: 0,
+    matchedVersion: '',
+    availableVersions: pluginVersions.map((entry) => entry.version).filter(Boolean),
+    packageCheck: null,
+    error: '',
+  }
+
+  if (!projectPath || !fs.existsSync(projectPath)) {
+    event.sender.send('import:progress', { stage: 'error', message: '当前目标项目无效，请先在主页选择或检测虚幻项目。' })
+    return { ...emptyResult, error: '当前目标项目无效，请先在主页选择或检测虚幻项目。' }
+  }
+
+  const matched = pluginVersions.find((entry) => normalizeUeVersionName(entry.version) === projectVersion)
+  const packagePath = matched?.packagePath || (!pluginVersions.length ? fallbackPackagePath : '')
+  if (!packagePath || !fs.existsSync(packagePath)) {
+    const versionText = projectVersion || '当前版本'
+    const availableText = emptyResult.availableVersions.length ? `可用版本：${emptyResult.availableVersions.join('、')}` : '当前插件没有可用版本包。'
+    event.sender.send('import:progress', { stage: 'error', message: `未找到 ${versionText} 对应插件包。${availableText}` })
+    return { ...emptyResult, error: `未找到 ${versionText} 对应插件包。${availableText}` }
+  }
+
+  let tempDir = ''
+  try {
+    tempDir = await extractArchiveToTemp(packagePath, event, '插件包')
+  } catch (error) {
+    const errorMsg = `解压失败：${error.message || '未知错误'}`
+    event.sender.send('import:progress', { stage: 'error', message: errorMsg })
+    return { ...emptyResult, error: errorMsg }
+  }
+
+  const packageCheck = inspectPluginPackage(tempDir)
+  if (!packageCheck.ok) {
+    removeDirRecursive(tempDir)
+    const issueText = packageCheck.issues.join('，')
+    event.sender.send('import:progress', { stage: 'error', message: `插件包结构异常：${issueText}。` })
+    return { ...emptyResult, packageCheck, error: `插件包结构异常：${issueText}。` }
+  }
+  const pluginRoot = packageCheck.pluginRoot
+
+  const projectDir = path.dirname(projectPath)
+  const pluginsDir = path.join(projectDir, 'Plugins')
+  const targetPluginDir = path.join(pluginsDir, path.basename(pluginRoot))
+
+  event.sender.send('import:progress', { stage: 'scanning', message: '正在扫描插件冲突文件...', current: 0, total: 0, percent: 0 })
+  const { conflicts, totalFiles } = scanConflicts(pluginRoot, targetPluginDir)
+
+  return {
+    success: true,
+    tempDir,
+    contentDir: pluginRoot,
+    targetContentDir: targetPluginDir,
+    conflicts,
+    totalFiles,
+    matchedVersion: matched?.version || projectVersion || '通用版本',
+    availableVersions: emptyResult.availableVersions,
+    packageCheck,
+    error: '',
   }
 })
 

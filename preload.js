@@ -20,10 +20,18 @@ contextBridge.exposeInMainWorld('settingsBridge', {
   chooseResourceRoot: () => ipcRenderer.invoke('settings:choose-resource-root'),
   saveResourceRoot: (resourceRootPath) => ipcRenderer.invoke('settings:save-resource-root', resourceRootPath),
   saveAll: (settings) => ipcRenderer.invoke('settings:save-all', settings),
+  checkForUpdates: () => ipcRenderer.invoke('settings:check-update'),
+})
+
+contextBridge.exposeInMainWorld('uePythonBridge', {
+  getBootstrapCode: () => ipcRenderer.invoke('ue-python:get-bootstrap-code'),
+  ping: () => ipcRenderer.invoke('ue-python:ping'),
+  execute: (data) => ipcRenderer.invoke('ue-python:execute', data),
+  getResult: (requestId) => ipcRenderer.invoke('ue-python:get-result', requestId),
+  shutdown: () => ipcRenderer.invoke('ue-python:shutdown'),
 })
 
 contextBridge.exposeInMainWorld('libraryBridge', {
-  getBlueprints: () => ipcRenderer.invoke('library:get-blueprints'),
   getAssets: (type) => ipcRenderer.invoke('library:get-assets', type),
   addAssetFolder: (type) => ipcRenderer.invoke('library:add-asset-folder', type),
   openAssetRoot: (type) => ipcRenderer.invoke('library:open-asset-root', type),
@@ -31,8 +39,18 @@ contextBridge.exposeInMainWorld('libraryBridge', {
   deleteAsset: (data) => ipcRenderer.invoke('library:delete-asset', data),
   createAsset: (data) => ipcRenderer.invoke('library:create-asset', data),
   chooseAssetFile: (kind) => ipcRenderer.invoke('library:choose-asset-file', kind),
+  readScriptFile: (filePath) => ipcRenderer.invoke('library:read-script-file', filePath),
+  saveScriptFile: (data) => ipcRenderer.invoke('library:save-script-file', data),
+  deleteScriptFile: (filePath) => ipcRenderer.invoke('library:delete-script-file', filePath),
+  getNodeSnippets: (category) => ipcRenderer.invoke('library:get-node-snippets', category),
+  readNodeSnippet: (filePath) => ipcRenderer.invoke('library:read-node-snippet', filePath),
+  saveNodeSnippet: (data) => ipcRenderer.invoke('library:save-node-snippet', data),
+  deleteNodeSnippet: (filePath) => ipcRenderer.invoke('library:delete-node-snippet', filePath),
+  copyNodeSnippet: (filePath) => ipcRenderer.invoke('library:copy-node-snippet', filePath),
+  openNodeDirectory: (category) => ipcRenderer.invoke('library:open-node-directory', category),
   filePath: (file) => webUtils.getPathForFile(file),
   prepareImport: (data) => ipcRenderer.invoke('library:prepare-import', data),
+  preparePluginImport: (data) => ipcRenderer.invoke('library:prepare-plugin-import', data),
   executeImport: (data) => ipcRenderer.invoke('library:execute-import', data),
   cancelImport: (data) => ipcRenderer.invoke('library:cancel-import', data),
   closeEditor: (data) => ipcRenderer.invoke('library:close-editor', data),

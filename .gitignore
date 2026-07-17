@@ -19,6 +19,7 @@ Desktop.ini
 .DS_Store
 
 # IDE
+.vs/
 .vscode/
 .idea/
 *.swp
