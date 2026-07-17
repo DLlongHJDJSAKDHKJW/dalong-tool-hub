@@ -207,6 +207,10 @@ const state = {
     releaseUrl: "",
     downloadUrl: "",
     assetName: "",
+    progressPercent: 0,
+    progressTransferred: 0,
+    progressTotal: 0,
+    progressVisible: false,
     message: "可以在这里检查是否有新版本。",
   },
   importState: {
@@ -2518,9 +2522,6 @@ function settingsPage() {
     ["maya", "MAYA"],
     ["ps", "PS"],
   ];
-  const checkedAtText = state.updateInfo.checkedAt
-    ? new Date(state.updateInfo.checkedAt).toLocaleString("zh-CN", { hour12: false })
-    : "尚未检查";
 
   return `
     <section class="page${state.activePage === "settings" ? " active" : ""}" data-page-panel="settings">
@@ -2536,32 +2537,27 @@ function settingsPage() {
               <span>当前版本 v${state.settings.appVersion || state.updateInfo.currentVersion || "未知"}</span>
               <p>${state.updateInfo.message}</p>
             </div>
-            <div class="about-meta-row">
-              <div class="about-meta">
-                <span>最新版本</span>
-                <strong>${state.updateInfo.latestVersion ? `v${state.updateInfo.latestVersion}` : "未配置"}</strong>
-              </div>
-              <div class="about-meta">
-                <span>安装包</span>
-                <strong>${state.updateInfo.assetName || "未找到"}</strong>
-              </div>
-              <div class="about-meta">
-                <span>最近检查</span>
-                <strong>${checkedAtText}</strong>
-              </div>
-            </div>
             <div class="settings-actions">
               <button class="action-btn primary" type="button" id="check-update-btn" ${state.updateInfo.checking ? "disabled" : ""}>
                 ${state.updateInfo.checking ? "检查中..." : "检查更新"}
               </button>
-              ${(state.updateInfo.downloadUrl || state.updateInfo.releaseUrl) ? `
+              ${state.updateInfo.hasUpdate && state.updateInfo.downloadUrl ? `
                 <button class="action-btn" type="button" id="open-release-btn" ${state.updateInfo.downloading ? "disabled" : ""}>
-                  ${state.updateInfo.downloading
-                    ? "下载中..."
-                    : (state.updateInfo.downloadUrl ? "下载最新安装包" : "打开发布页面")}
+                  ${state.updateInfo.downloading ? "下载中..." : "下载更新"}
                 </button>
               ` : ""}
             </div>
+            ${state.updateInfo.progressVisible ? `
+              <div class="update-progress-block">
+                <div class="update-progress-head">
+                  <span>下载进度</span>
+                  <strong>${state.updateInfo.progressPercent}%</strong>
+                </div>
+                <div class="update-progress-bar">
+                  <span style="width:${Math.max(0, Math.min(100, state.updateInfo.progressPercent))}%"></span>
+                </div>
+              </div>
+            ` : ""}
           </div>
         </section>
         <section class="panel settings-panel">
@@ -3065,6 +3061,10 @@ async function checkForUpdates() {
       releaseUrl: result?.releaseUrl || "",
       downloadUrl: result?.downloadUrl || "",
       assetName: result?.assetName || "",
+      progressPercent: 0,
+      progressTransferred: 0,
+      progressTotal: 0,
+      progressVisible: false,
       message: result?.message || "检查完成。",
     };
   } catch (error) {
@@ -3074,11 +3074,48 @@ async function checkForUpdates() {
       downloading: false,
       downloadUrl: "",
       assetName: "",
+      progressPercent: 0,
+      progressTransferred: 0,
+      progressTotal: 0,
+      progressVisible: false,
       checkedAt: new Date().toISOString(),
       message: "检查更新失败。",
     };
   }
 
+  render();
+}
+
+async function runImmediateUpdate() {
+  if (state.updateInfo.downloading || !state.updateInfo.downloadUrl) {
+    return;
+  }
+
+  state.updateInfo.downloading = true;
+  state.updateInfo.progressVisible = true;
+  state.updateInfo.progressPercent = 0;
+  state.updateInfo.progressTransferred = 0;
+  state.updateInfo.progressTotal = 0;
+  state.updateInfo.message = "正在后台下载并准备安装更新...";
+  render();
+
+  const result = await window.settingsBridge?.performUpdate({
+    downloadUrl: state.updateInfo.downloadUrl,
+    assetName: state.updateInfo.assetName,
+    latestVersion: state.updateInfo.latestVersion,
+  });
+
+  if (result?.success) {
+    state.updateInfo.message = result?.message || "安装程序已启动。";
+    showToast("安装程序已启动，更新包已保存到下载目录", "success", 5000);
+    render();
+    return;
+  }
+
+  state.updateInfo.downloading = false;
+  state.updateInfo.progressVisible = false;
+  state.updateInfo.message = result?.error || "自动更新失败。";
+  showToast(result?.error || "自动更新失败", "error");
   render();
 }
 
@@ -3283,20 +3320,7 @@ function bindEvents() {
     }
 
     if (state.updateInfo.downloadUrl) {
-      state.updateInfo.downloading = true;
-      render();
-      const result = await window.settingsBridge?.downloadUpdate({
-        downloadUrl: state.updateInfo.downloadUrl,
-        assetName: state.updateInfo.assetName,
-        latestVersion: state.updateInfo.latestVersion,
-      });
-      state.updateInfo.downloading = false;
-      if (result?.success) {
-        showToast(result?.openedInstaller ? "安装包已打开" : "安装包已下载完成", "success", 5000);
-      } else if (!result?.cancelled) {
-        showToast(result?.error || "下载安装包失败", "error");
-      }
-      render();
+      await runImmediateUpdate();
       return;
     }
 
@@ -3848,6 +3872,32 @@ function bindEvents() {
 render();
 loadProjectState();
 loadSettingsState();
+if (window.settingsBridge?.onUpdateProgress) {
+  window.settingsBridge.onUpdateProgress((data) => {
+    const stage = String(data?.stage || "");
+    state.updateInfo.progressVisible = stage !== "failed";
+    state.updateInfo.downloading = stage === "downloading" || stage === "downloaded";
+    state.updateInfo.progressPercent = Number(data?.percent) || 0;
+    state.updateInfo.progressTransferred = Number(data?.transferred) || 0;
+    state.updateInfo.progressTotal = Number(data?.total) || 0;
+    if (data?.message) {
+      state.updateInfo.message = data.message;
+    }
+    if (stage === "failed") {
+      state.updateInfo.downloading = false;
+      state.updateInfo.progressVisible = false;
+      state.updateInfo.progressPercent = 0;
+      state.updateInfo.progressTransferred = 0;
+      state.updateInfo.progressTotal = 0;
+    }
+    if (stage === "completed") {
+      state.updateInfo.downloading = false;
+      state.updateInfo.progressVisible = true;
+      state.updateInfo.progressPercent = 100;
+    }
+    render();
+  });
+}
 uePythonHeartbeatTimer = setInterval(() => {
   if (state.activePage === "script" && !state.uePython.executing && !state.scriptEditor.open) {
     checkUePythonConnection(true);

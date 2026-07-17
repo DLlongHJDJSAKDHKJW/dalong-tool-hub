@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron')
 const fs = require('fs')
 const path = require('path')
+const { Readable } = require('stream')
 const { pathToFileURL } = require('url')
 const os = require('os')
 const net = require('net')
@@ -326,7 +327,7 @@ async function checkForUpdates() {
       checkedAt,
       message: hasUpdate
         ? (downloadUrl
-          ? `发现新版本 v${latestVersion}，可直接下载最新安装包。`
+          ? `发现新版本 v${latestVersion}。`
           : `发现新版本 v${latestVersion}，但当前 Release 里还没有安装包附件。`)
         : `当前已经是最新版本 v${currentVersion}。`,
     }
@@ -345,28 +346,29 @@ async function checkForUpdates() {
   }
 }
 
-async function downloadUpdatePackage(data) {
-  const fallbackName = `大龙工具中枢-Setup-${normalizeVersionText(data?.latestVersion || app.getVersion()) || app.getVersion()}-x64.exe`
+async function performAutoUpdate(data) {
   const downloadUrl = String(data?.downloadUrl || '')
-  const assetName = String(data?.assetName || fallbackName).trim() || fallbackName
+  const assetName = String(data?.assetName || '').trim() || `大龙工具中枢-Setup-${normalizeVersionText(data?.latestVersion || app.getVersion()) || app.getVersion()}-x64.exe`
+  const emitUpdateProgress = (payload) => {
+    mainWindow?.webContents.send('settings:update-progress', payload)
+  }
 
-  if (!/^https:\/\/github\.com\/DLlongHJDJSAKDHKJW\/dalong-tool-hub/i.test(downloadUrl)) {
+  if (!/^https:\/\/(?:github\.com|objects\.githubusercontent\.com)\/.+/i.test(downloadUrl)) {
+    emitUpdateProgress({
+      stage: 'failed',
+      percent: 0,
+      transferred: 0,
+      total: 0,
+      message: '没有可下载的安装包链接。',
+    })
     return { success: false, error: '没有可下载的安装包链接。' }
   }
 
-  const saveDialog = await dialog.showSaveDialog(mainWindow, {
-    title: '保存最新安装包',
-    defaultPath: path.join(app.getPath('downloads'), assetName),
-    filters: [
-      { name: '安装程序', extensions: ['exe'] },
-    ],
-  })
-
-  if (saveDialog.canceled || !saveDialog.filePath) {
-    return { success: false, cancelled: true, error: '已取消下载。' }
-  }
+  const downloadDir = path.join(app.getPath('downloads'), '大龙工具中枢更新包')
+  const targetPath = path.join(downloadDir, assetName)
 
   try {
+    await fs.promises.mkdir(downloadDir, { recursive: true })
     const response = await fetch(downloadUrl, {
       headers: {
         'Accept': 'application/octet-stream',
@@ -375,39 +377,86 @@ async function downloadUpdatePackage(data) {
     })
 
     if (!response.ok || !response.body) {
+      emitUpdateProgress({
+        stage: 'failed',
+        percent: 0,
+        transferred: 0,
+        total: 0,
+        message: `下载失败：GitHub 返回 ${response.status}。`,
+      })
       return { success: false, error: `下载失败：GitHub 返回 ${response.status}。` }
     }
 
-    await fs.promises.mkdir(path.dirname(saveDialog.filePath), { recursive: true })
-    const fileStream = fs.createWriteStream(saveDialog.filePath)
-    await new Promise((resolve, reject) => {
-      response.body.pipe(fileStream)
-      response.body.on('error', reject)
-      fileStream.on('finish', resolve)
-      fileStream.on('error', reject)
+    const totalBytes = Number(response.headers.get('content-length') || 0)
+    let downloadedBytes = 0
+    let lastPercent = -1
+    const streamBody = typeof response.body?.pipe === 'function' ? response.body : Readable.fromWeb(response.body)
+    streamBody.on('data', (chunk) => {
+      downloadedBytes += chunk?.length || 0
+      const percent = totalBytes > 0 ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)) : 0
+      if (percent !== lastPercent) {
+        lastPercent = percent
+        emitUpdateProgress({
+          percent,
+          transferred: downloadedBytes,
+          total: totalBytes,
+          stage: 'downloading',
+          message: totalBytes > 0
+            ? `正在下载更新 ${percent}%`
+            : '正在下载更新...',
+        })
+      }
     })
 
-    const openNow = await dialog.showMessageBox(mainWindow, {
-      type: 'question',
-      buttons: ['立即安装', '稍后安装'],
-      defaultId: 0,
-      cancelId: 1,
-      title: '下载完成',
-      message: '最新安装包已下载完成。',
-      detail: saveDialog.filePath,
+    await writeResponseBodyToFile(streamBody, targetPath)
+    emitUpdateProgress({
+      percent: 100,
+      transferred: downloadedBytes,
+      total: totalBytes,
+      stage: 'downloaded',
+      message: '下载完成，正在启动安装程序...',
     })
 
-    if (openNow.response === 0) {
-      await shell.openPath(saveDialog.filePath)
+    const openResult = await shell.openPath(targetPath)
+    if (openResult) {
+      emitUpdateProgress({
+        stage: 'failed',
+        percent: 100,
+        transferred: downloadedBytes,
+        total: totalBytes,
+        message: `启动安装程序失败：${openResult}`,
+      })
+      return { success: false, error: `启动安装程序失败：${openResult}` }
     }
+
+    emitUpdateProgress({
+      stage: 'completed',
+      percent: 100,
+      transferred: downloadedBytes,
+      total: totalBytes,
+      message: '安装程序已启动，旧版本软件即将退出。',
+    })
+
+    setTimeout(() => {
+      if (!mainWindow?.isDestroyed()) {
+        mainWindow.close()
+      }
+    }, 1200)
 
     return {
       success: true,
-      savedPath: saveDialog.filePath,
-      openedInstaller: openNow.response === 0,
+      downloadedPath: targetPath,
+      message: `安装程序已启动，安装包已保存到下载目录：${targetPath}`,
     }
   } catch (error) {
-    return { success: false, error: `下载安装包失败：${error.message || '未知错误'}` }
+    emitUpdateProgress({
+      stage: 'failed',
+      percent: 0,
+      transferred: 0,
+      total: 0,
+      message: `自动更新失败：${error.message || '未知错误'}`,
+    })
+    return { success: false, error: `自动更新失败：${error.message || '未知错误'}` }
   }
 }
 
@@ -426,6 +475,17 @@ function compareVersions(left, right) {
     }
   }
   return 0
+}
+
+async function writeResponseBodyToFile(body, targetPath) {
+  const nodeStream = typeof body?.pipe === 'function' ? body : Readable.fromWeb(body)
+  const fileStream = fs.createWriteStream(targetPath)
+  await new Promise((resolve, reject) => {
+    nodeStream.pipe(fileStream)
+    nodeStream.on('error', reject)
+    fileStream.on('finish', resolve)
+    fileStream.on('error', reject)
+  })
 }
 
 function uePythonRequest(payload, timeoutMs = 5000) {
@@ -1164,13 +1224,13 @@ ipcMain.handle('settings:check-update', async () => {
   }
 })
 
-ipcMain.handle('settings:download-update', async (event, data) => {
+ipcMain.handle('settings:perform-update', async (event, data) => {
   try {
-    return await downloadUpdatePackage(data)
+    return await performAutoUpdate(data)
   } catch (error) {
     return {
       success: false,
-      error: `下载安装包失败：${error.message || '未知错误'}`,
+      error: `自动更新失败：${error.message || '未知错误'}`,
     }
   }
 })

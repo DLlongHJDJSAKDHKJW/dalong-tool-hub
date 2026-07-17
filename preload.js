@@ -21,8 +21,16 @@ contextBridge.exposeInMainWorld('settingsBridge', {
   saveResourceRoot: (resourceRootPath) => ipcRenderer.invoke('settings:save-resource-root', resourceRootPath),
   saveAll: (settings) => ipcRenderer.invoke('settings:save-all', settings),
   checkForUpdates: () => ipcRenderer.invoke('settings:check-update'),
-  downloadUpdate: (data) => ipcRenderer.invoke('settings:download-update', data),
+  performUpdate: (data) => ipcRenderer.invoke('settings:perform-update', data),
   openExternal: (url) => ipcRenderer.invoke('settings:open-external', url),
+  onUpdateProgress: (callback) => {
+    const handler = (_event, data) => callback(data)
+    ipcRenderer.on('settings:update-progress', handler)
+    return () => ipcRenderer.removeListener('settings:update-progress', handler)
+  },
+  offUpdateProgress: () => {
+    ipcRenderer.removeAllListeners('settings:update-progress')
+  },
 })
 
 contextBridge.exposeInMainWorld('uePythonBridge', {
