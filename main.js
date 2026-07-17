@@ -18,7 +18,7 @@ app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor')
 app.commandLine.appendSwitch('in-process-gpu')
 app.disableHardwareAcceleration()
 
-const localUserDataPath = path.join(__dirname, '.workbuddy', 'electron-user-data')
+const localUserDataPath = path.join(app.getPath('appData'), '大龙工具中枢')
 fs.mkdirSync(localUserDataPath, { recursive: true })
 app.setPath('userData', localUserDataPath)
 
