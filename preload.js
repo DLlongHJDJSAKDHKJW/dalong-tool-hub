@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('settingsBridge', {
   saveResourceRoot: (resourceRootPath) => ipcRenderer.invoke('settings:save-resource-root', resourceRootPath),
   saveAll: (settings) => ipcRenderer.invoke('settings:save-all', settings),
   checkForUpdates: () => ipcRenderer.invoke('settings:check-update'),
+  openExternal: (url) => ipcRenderer.invoke('settings:open-external', url),
 })
 
 contextBridge.exposeInMainWorld('uePythonBridge', {

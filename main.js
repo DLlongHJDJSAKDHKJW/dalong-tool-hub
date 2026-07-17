@@ -9,6 +9,7 @@ let mainWindow = null
 let importCancelled = false
 const uePythonHost = '127.0.0.1'
 const uePythonPort = 8765
+const githubLatestReleaseUrl = 'https://api.github.com/repos/DLlongHJDJSAKDHKJW/dalong-tool-hub/releases/latest'
 
 app.commandLine.appendSwitch('disable-gpu')
 app.commandLine.appendSwitch('disable-gpu-compositing')
@@ -248,16 +249,82 @@ function settingsState() {
 
 async function checkForUpdates() {
   const currentVersion = app.getVersion()
+  const checkedAt = new Date().toISOString()
 
-  return {
-    success: true,
-    currentVersion,
-    latestVersion: '',
-    hasUpdate: false,
-    releaseUrl: '',
-    checkedAt: new Date().toISOString(),
-    message: '当前项目还未配置更新源，后续重新上传后再接入在线检查更新。',
+  try {
+    const response = await fetch(githubLatestReleaseUrl, {
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'dalong-tool-hub',
+      },
+    })
+
+    if (response.status === 404) {
+      return {
+        success: true,
+        currentVersion,
+        latestVersion: '',
+        hasUpdate: false,
+        releaseUrl: 'https://github.com/DLlongHJDJSAKDHKJW/dalong-tool-hub/releases',
+        checkedAt,
+        message: 'GitHub 仓库还没有创建 Release，创建发布版本后即可检查更新。',
+      }
+    }
+
+    if (!response.ok) {
+      return {
+        success: false,
+        currentVersion,
+        latestVersion: '',
+        hasUpdate: false,
+        releaseUrl: 'https://github.com/DLlongHJDJSAKDHKJW/dalong-tool-hub/releases',
+        checkedAt,
+        message: `检查更新失败：GitHub 返回 ${response.status}。`,
+      }
+    }
+
+    const release = await response.json()
+    const latestVersion = normalizeVersionText(release?.tag_name || release?.name || '')
+    const hasUpdate = compareVersions(latestVersion, currentVersion) > 0
+    return {
+      success: true,
+      currentVersion,
+      latestVersion,
+      hasUpdate,
+      releaseUrl: release?.html_url || 'https://github.com/DLlongHJDJSAKDHKJW/dalong-tool-hub/releases',
+      checkedAt,
+      message: hasUpdate
+        ? `发现新版本 v${latestVersion}，可以前往 GitHub 下载。`
+        : `当前已经是最新版本 v${currentVersion}。`,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      currentVersion,
+      latestVersion: '',
+      hasUpdate: false,
+      releaseUrl: 'https://github.com/DLlongHJDJSAKDHKJW/dalong-tool-hub/releases',
+      checkedAt,
+      message: `检查更新失败：${error.message || '网络连接异常'}`,
+    }
   }
+}
+
+function normalizeVersionText(value) {
+  return String(value || '').trim().replace(/^v/i, '').match(/\d+(?:\.\d+){0,3}/)?.[0] || ''
+}
+
+function compareVersions(left, right) {
+  const a = normalizeVersionText(left).split('.').map((item) => Number(item) || 0)
+  const b = normalizeVersionText(right).split('.').map((item) => Number(item) || 0)
+  const length = Math.max(a.length, b.length, 3)
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a[index] || 0) - (b[index] || 0)
+    if (diff !== 0) {
+      return diff
+    }
+  }
+  return 0
 }
 
 function uePythonRequest(payload, timeoutMs = 5000) {
@@ -1488,6 +1555,15 @@ ipcMain.handle('library:create-asset', async (event, data) => {
     }
     return { success: false, error: `创建资产失败：${error.message || '未知错误'}` }
   }
+})
+
+ipcMain.handle('settings:open-external', async (event, url) => {
+  const targetUrl = String(url || '')
+  if (!/^https:\/\/github\.com\/DLlongHJDJSAKDHKJW\/dalong-tool-hub/i.test(targetUrl)) {
+    return { success: false, error: '只能打开当前项目的 GitHub 页面。' }
+  }
+  await shell.openExternal(targetUrl)
+  return { success: true }
 })
 
 ipcMain.handle('settings:choose-resource-root', async () => {

@@ -2547,6 +2547,11 @@ function settingsPage() {
               <button class="action-btn primary" type="button" id="check-update-btn" ${state.updateInfo.checking ? "disabled" : ""}>
                 ${state.updateInfo.checking ? "检查中..." : "检查更新"}
               </button>
+              ${state.updateInfo.releaseUrl ? `
+                <button class="action-btn" type="button" id="open-release-btn">
+                  ${state.updateInfo.hasUpdate ? "下载新版本" : "打开发布页面"}
+                </button>
+              ` : ""}
             </div>
           </div>
         </section>
@@ -3255,6 +3260,16 @@ function bindEvents() {
       return;
     }
     checkForUpdates();
+  });
+
+  document.getElementById("open-release-btn")?.addEventListener("click", async () => {
+    if (!state.updateInfo.releaseUrl) {
+      return;
+    }
+    const result = await window.settingsBridge?.openExternal(state.updateInfo.releaseUrl);
+    if (!result?.success) {
+      showToast(result?.error || "打开发布页面失败", "error");
+    }
   });
 
   document.getElementById("copy-ue-python-bootstrap-btn")?.addEventListener("click", () => {
