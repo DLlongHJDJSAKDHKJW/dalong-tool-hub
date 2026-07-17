@@ -199,11 +199,14 @@ const state = {
   settingsMessage: "设置资源根目录后，软件就可以读取这个路径下的文件。",
   updateInfo: {
     checking: false,
+    downloading: false,
     currentVersion: "",
     latestVersion: "",
     hasUpdate: false,
     checkedAt: "",
     releaseUrl: "",
+    downloadUrl: "",
+    assetName: "",
     message: "可以在这里检查是否有新版本。",
   },
   importState: {
@@ -2539,6 +2542,10 @@ function settingsPage() {
                 <strong>${state.updateInfo.latestVersion ? `v${state.updateInfo.latestVersion}` : "未配置"}</strong>
               </div>
               <div class="about-meta">
+                <span>安装包</span>
+                <strong>${state.updateInfo.assetName || "未找到"}</strong>
+              </div>
+              <div class="about-meta">
                 <span>最近检查</span>
                 <strong>${checkedAtText}</strong>
               </div>
@@ -2547,9 +2554,11 @@ function settingsPage() {
               <button class="action-btn primary" type="button" id="check-update-btn" ${state.updateInfo.checking ? "disabled" : ""}>
                 ${state.updateInfo.checking ? "检查中..." : "检查更新"}
               </button>
-              ${state.updateInfo.releaseUrl ? `
-                <button class="action-btn" type="button" id="open-release-btn">
-                  ${state.updateInfo.hasUpdate ? "下载新版本" : "打开发布页面"}
+              ${(state.updateInfo.downloadUrl || state.updateInfo.releaseUrl) ? `
+                <button class="action-btn" type="button" id="open-release-btn" ${state.updateInfo.downloading ? "disabled" : ""}>
+                  ${state.updateInfo.downloading
+                    ? "下载中..."
+                    : (state.updateInfo.downloadUrl ? "下载最新安装包" : "打开发布页面")}
                 </button>
               ` : ""}
             </div>
@@ -3048,17 +3057,23 @@ async function checkForUpdates() {
     const result = await window.settingsBridge?.checkForUpdates();
     state.updateInfo = {
       checking: false,
+      downloading: false,
       currentVersion: result?.currentVersion || state.settings.appVersion || "",
       latestVersion: result?.latestVersion || "",
       hasUpdate: Boolean(result?.hasUpdate),
       checkedAt: result?.checkedAt || "",
       releaseUrl: result?.releaseUrl || "",
+      downloadUrl: result?.downloadUrl || "",
+      assetName: result?.assetName || "",
       message: result?.message || "检查完成。",
     };
   } catch (error) {
     state.updateInfo = {
       ...state.updateInfo,
       checking: false,
+      downloading: false,
+      downloadUrl: "",
+      assetName: "",
       checkedAt: new Date().toISOString(),
       message: "检查更新失败。",
     };
@@ -3263,10 +3278,33 @@ function bindEvents() {
   });
 
   document.getElementById("open-release-btn")?.addEventListener("click", async () => {
-    if (!state.updateInfo.releaseUrl) {
+    if (state.updateInfo.downloading) {
       return;
     }
-    const result = await window.settingsBridge?.openExternal(state.updateInfo.releaseUrl);
+
+    if (state.updateInfo.downloadUrl) {
+      state.updateInfo.downloading = true;
+      render();
+      const result = await window.settingsBridge?.downloadUpdate({
+        downloadUrl: state.updateInfo.downloadUrl,
+        assetName: state.updateInfo.assetName,
+        latestVersion: state.updateInfo.latestVersion,
+      });
+      state.updateInfo.downloading = false;
+      if (result?.success) {
+        showToast(result?.openedInstaller ? "安装包已打开" : "安装包已下载完成", "success", 5000);
+      } else if (!result?.cancelled) {
+        showToast(result?.error || "下载安装包失败", "error");
+      }
+      render();
+      return;
+    }
+
+    const targetUrl = state.updateInfo.releaseUrl;
+    if (!targetUrl) {
+      return;
+    }
+    const result = await window.settingsBridge?.openExternal(targetUrl);
     if (!result?.success) {
       showToast(result?.error || "打开发布页面失败", "error");
     }

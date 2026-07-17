@@ -18,9 +18,27 @@ app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor')
 app.commandLine.appendSwitch('in-process-gpu')
 app.disableHardwareAcceleration()
 
-const localUserDataPath = path.join(app.getPath('appData'), '大龙工具中枢')
-fs.mkdirSync(localUserDataPath, { recursive: true })
-app.setPath('userData', localUserDataPath)
+function ensureWritableDirectory(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true })
+  const probePath = path.join(dirPath, '.write-test')
+  fs.writeFileSync(probePath, 'ok', 'utf8')
+  fs.unlinkSync(probePath)
+  return dirPath
+}
+
+function resolvePreferredUserDataPath() {
+  const appFolderPath = path.dirname(app.getPath('exe'))
+  const localDataPath = path.join(appFolderPath, 'data')
+
+  try {
+    return ensureWritableDirectory(localDataPath)
+  } catch (error) {
+    const roamingDataPath = path.join(app.getPath('appData'), '大龙工具中枢')
+    return ensureWritableDirectory(roamingDataPath)
+  }
+}
+
+app.setPath('userData', resolvePreferredUserDataPath())
 
 function storePath() {
   return path.join(app.getPath('userData'), 'projects-store.json')
@@ -250,6 +268,7 @@ function settingsState() {
 async function checkForUpdates() {
   const currentVersion = app.getVersion()
   const checkedAt = new Date().toISOString()
+  const releasePageUrl = 'https://github.com/DLlongHJDJSAKDHKJW/dalong-tool-hub/releases'
 
   try {
     const response = await fetch(githubLatestReleaseUrl, {
@@ -265,7 +284,9 @@ async function checkForUpdates() {
         currentVersion,
         latestVersion: '',
         hasUpdate: false,
-        releaseUrl: 'https://github.com/DLlongHJDJSAKDHKJW/dalong-tool-hub/releases',
+        releaseUrl: releasePageUrl,
+        downloadUrl: '',
+        assetName: '',
         checkedAt,
         message: 'GitHub 仓库还没有创建 Release，创建发布版本后即可检查更新。',
       }
@@ -277,24 +298,36 @@ async function checkForUpdates() {
         currentVersion,
         latestVersion: '',
         hasUpdate: false,
-        releaseUrl: 'https://github.com/DLlongHJDJSAKDHKJW/dalong-tool-hub/releases',
+        releaseUrl: releasePageUrl,
+        downloadUrl: '',
+        assetName: '',
         checkedAt,
         message: `检查更新失败：GitHub 返回 ${response.status}。`,
       }
     }
 
     const release = await response.json()
+    const assets = Array.isArray(release?.assets) ? release.assets : []
+    const preferredAsset = assets.find((asset) => /setup-.*x64\.exe$/i.test(String(asset?.name || '')))
+      || assets.find((asset) => /\.exe$/i.test(String(asset?.name || '')))
+      || null
     const latestVersion = normalizeVersionText(release?.tag_name || release?.name || '')
     const hasUpdate = compareVersions(latestVersion, currentVersion) > 0
+    const downloadUrl = String(preferredAsset?.browser_download_url || '')
+    const assetName = String(preferredAsset?.name || '')
     return {
       success: true,
       currentVersion,
       latestVersion,
       hasUpdate,
-      releaseUrl: release?.html_url || 'https://github.com/DLlongHJDJSAKDHKJW/dalong-tool-hub/releases',
+      releaseUrl: release?.html_url || releasePageUrl,
+      downloadUrl,
+      assetName,
       checkedAt,
       message: hasUpdate
-        ? `发现新版本 v${latestVersion}，可以前往 GitHub 下载。`
+        ? (downloadUrl
+          ? `发现新版本 v${latestVersion}，可直接下载最新安装包。`
+          : `发现新版本 v${latestVersion}，但当前 Release 里还没有安装包附件。`)
         : `当前已经是最新版本 v${currentVersion}。`,
     }
   } catch (error) {
@@ -303,10 +336,78 @@ async function checkForUpdates() {
       currentVersion,
       latestVersion: '',
       hasUpdate: false,
-      releaseUrl: 'https://github.com/DLlongHJDJSAKDHKJW/dalong-tool-hub/releases',
+      releaseUrl: releasePageUrl,
+      downloadUrl: '',
+      assetName: '',
       checkedAt,
       message: `检查更新失败：${error.message || '网络连接异常'}`,
     }
+  }
+}
+
+async function downloadUpdatePackage(data) {
+  const fallbackName = `大龙工具中枢-Setup-${normalizeVersionText(data?.latestVersion || app.getVersion()) || app.getVersion()}-x64.exe`
+  const downloadUrl = String(data?.downloadUrl || '')
+  const assetName = String(data?.assetName || fallbackName).trim() || fallbackName
+
+  if (!/^https:\/\/github\.com\/DLlongHJDJSAKDHKJW\/dalong-tool-hub/i.test(downloadUrl)) {
+    return { success: false, error: '没有可下载的安装包链接。' }
+  }
+
+  const saveDialog = await dialog.showSaveDialog(mainWindow, {
+    title: '保存最新安装包',
+    defaultPath: path.join(app.getPath('downloads'), assetName),
+    filters: [
+      { name: '安装程序', extensions: ['exe'] },
+    ],
+  })
+
+  if (saveDialog.canceled || !saveDialog.filePath) {
+    return { success: false, cancelled: true, error: '已取消下载。' }
+  }
+
+  try {
+    const response = await fetch(downloadUrl, {
+      headers: {
+        'Accept': 'application/octet-stream',
+        'User-Agent': 'dalong-tool-hub',
+      },
+    })
+
+    if (!response.ok || !response.body) {
+      return { success: false, error: `下载失败：GitHub 返回 ${response.status}。` }
+    }
+
+    await fs.promises.mkdir(path.dirname(saveDialog.filePath), { recursive: true })
+    const fileStream = fs.createWriteStream(saveDialog.filePath)
+    await new Promise((resolve, reject) => {
+      response.body.pipe(fileStream)
+      response.body.on('error', reject)
+      fileStream.on('finish', resolve)
+      fileStream.on('error', reject)
+    })
+
+    const openNow = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      buttons: ['立即安装', '稍后安装'],
+      defaultId: 0,
+      cancelId: 1,
+      title: '下载完成',
+      message: '最新安装包已下载完成。',
+      detail: saveDialog.filePath,
+    })
+
+    if (openNow.response === 0) {
+      await shell.openPath(saveDialog.filePath)
+    }
+
+    return {
+      success: true,
+      savedPath: saveDialog.filePath,
+      openedInstaller: openNow.response === 0,
+    }
+  } catch (error) {
+    return { success: false, error: `下载安装包失败：${error.message || '未知错误'}` }
   }
 }
 
@@ -1055,8 +1156,21 @@ ipcMain.handle('settings:check-update', async () => {
       latestVersion: '',
       hasUpdate: false,
       releaseUrl: '',
+      downloadUrl: '',
+      assetName: '',
       checkedAt: new Date().toISOString(),
       message: `检查更新失败：${error.message || '未知错误'}`,
+    }
+  }
+})
+
+ipcMain.handle('settings:download-update', async (event, data) => {
+  try {
+    return await downloadUpdatePackage(data)
+  } catch (error) {
+    return {
+      success: false,
+      error: `下载安装包失败：${error.message || '未知错误'}`,
     }
   }
 })

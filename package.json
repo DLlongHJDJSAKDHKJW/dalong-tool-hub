@@ -1,6 +1,6 @@
 {
   "name": "dalong-tool-hub",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -22,15 +22,10 @@
       "package.json"
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
           "arch": [
             "x64"
           ]
@@ -43,9 +38,6 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
-    },
-    "portable": {
-      "artifactName": "${productName}-Portable-${version}-${arch}.${ext}"
     }
   },
   "devDependencies": {
