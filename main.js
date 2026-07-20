@@ -1900,22 +1900,25 @@ async function extractArchiveToTemp(packagePath, event, label = '资源包') {
     event.sender.send('import:progress', { stage: 'extracting', message: `正在解压${label}...`, current: 0, total: 0, percent: -1 })
     const ext = path.extname(packagePath).toLowerCase()
 
-    if (ext === '.zip') {
-      const AdmZip = require('adm-zip')
-      const zip = new AdmZip(packagePath)
-      zip.extractAllTo(tempDir, true)
-    } else if (ext === '.7z' || ext === '.rar') {
+    if (ext === '.zip' || ext === '.7z' || ext === '.rar') {
       const { execFile } = require('child_process')
       const sevenZip = require('7zip-bin')
       const sevenZipPath = sevenZip.path7za || sevenZip.path7x || sevenZip.path7zz
       if (!sevenZipPath || !fs.existsSync(sevenZipPath)) {
-        throw new Error('未找到 7z 解压工具，无法解压 7z/rar 文件。')
+        throw new Error('未找到 7z 解压工具，无法解压压缩文件。')
+      }
+
+      const args = ['x', packagePath, `-o${tempDir}`, '-y', '-sccUTF-8']
+      // 中文环境里大量 zip 仍然使用 GBK/CP936 存储非 Unicode 文件名。
+      // 这里显式指定 zip 的代码页，避免蓝图/材质/插件导入时出现乱码目录名。
+      if (ext === '.zip') {
+        args.push('-mcp=936')
       }
 
       await new Promise((resolve, reject) => {
         execFile(
           sevenZipPath,
-          ['x', packagePath, `-o${tempDir}`, '-y'],
+          args,
           { encoding: 'utf8', windowsHide: true, maxBuffer: 30 * 1024 * 1024 },
           (error, stdout, stderr) => {
             if (error) {
