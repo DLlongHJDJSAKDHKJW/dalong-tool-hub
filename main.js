@@ -738,9 +738,29 @@ const assetLibraryTypes = {
 }
 
 const nodeSnippetCategories = {
-  blueprint: { label: '蓝图', folderNames: ['蓝图', 'Blueprint', 'Blueprints', 'blueprint', 'blueprints'] },
-  material: { label: '材质', folderNames: ['材质', 'Material', 'Materials', 'material', 'materials'] },
-  effect: { label: '特效', folderNames: ['特效', 'Effect', 'Effects', 'VFX', 'vfx', 'effect', 'effects'] },
+  blueprint: {
+    label: '蓝图',
+    folderNames: ['蓝图', 'Blueprint', 'Blueprints', 'blueprint', 'blueprints'],
+    groups: {
+      node: { label: '节点', folderNames: ['蓝图节点', 'BlueprintNode', 'BlueprintNodes', 'blueprint-node', 'blueprint-nodes'] },
+      function: { label: '函数', folderNames: ['蓝图函数', 'BlueprintFunction', 'BlueprintFunctions', 'blueprint-function', 'blueprint-functions'] },
+    },
+  },
+  material: {
+    label: '材质',
+    folderNames: ['材质', 'Material', 'Materials', 'material', 'materials'],
+    groups: {
+      node: { label: '节点', folderNames: ['材质节点', 'MaterialNode', 'MaterialNodes', 'material-node', 'material-nodes'] },
+      function: { label: '函数', folderNames: ['材质函数', 'MaterialFunction', 'MaterialFunctions', 'material-function', 'material-functions'] },
+    },
+  },
+  effect: {
+    label: '特效',
+    folderNames: ['特效', 'Effect', 'Effects', 'VFX', 'vfx', 'effect', 'effects'],
+    groups: {
+      node: { label: '节点', folderNames: ['特效节点', 'EffectNode', 'EffectNodes', 'VFXNode', 'VFXNodes', 'effect-node', 'effect-nodes'] },
+    },
+  },
 }
 
 function unrealAssetRootPath(resourceRootPath) {
@@ -802,7 +822,27 @@ function nodeSnippetRootPath(resourceRootPath, category) {
   return firstExistingPath(meta.folderNames.map((folderName) => path.join(nodeRoot, folderName))) || path.join(nodeRoot, meta.label)
 }
 
-function ensureNodeSnippetDirectory(resourceRootPath, category) {
+function nodeSnippetGroupMeta(category, group = 'node') {
+  const categoryMeta = nodeSnippetCategories[category] || nodeSnippetCategories.blueprint
+  return categoryMeta.groups?.[group] || categoryMeta.groups?.node || { label: '节点', folderNames: ['节点'] }
+}
+
+function normalizeNodeSnippetGroup(category, group = 'node') {
+  return category === 'effect'
+    ? 'node'
+    : (group === 'function' ? 'function' : 'node')
+}
+
+function nodeSnippetGroupPath(resourceRootPath, category, group = 'node') {
+  const categoryRoot = nodeSnippetRootPath(resourceRootPath, category)
+  if (!categoryRoot) {
+    return ''
+  }
+  const groupMeta = nodeSnippetGroupMeta(category, group)
+  return firstExistingPath(groupMeta.folderNames.map((folderName) => path.join(categoryRoot, folderName))) || path.join(categoryRoot, groupMeta.folderNames?.[0] || groupMeta.label)
+}
+
+function ensureNodeSnippetDirectory(resourceRootPath, category, group = 'node') {
   const nodeRoot = assetTypeRootPath(resourceRootPath, 'node') || preferredAssetTypeRootPath(resourceRootPath, 'node')
   if (!nodeRoot) {
     return ''
@@ -810,9 +850,13 @@ function ensureNodeSnippetDirectory(resourceRootPath, category) {
   fs.mkdirSync(nodeRoot, { recursive: true })
   Object.keys(nodeSnippetCategories).forEach((key) => {
     const meta = nodeSnippetCategories[key]
-    fs.mkdirSync(path.join(nodeRoot, meta.label), { recursive: true })
+    const categoryDir = path.join(nodeRoot, meta.folderNames?.[0] || meta.label)
+    fs.mkdirSync(categoryDir, { recursive: true })
+    Object.values(meta.groups || {}).forEach((groupMeta) => {
+      fs.mkdirSync(path.join(categoryDir, groupMeta.folderNames?.[0] || groupMeta.label), { recursive: true })
+    })
   })
-  const targetDir = nodeSnippetRootPath(resourceRootPath, category)
+  const targetDir = nodeSnippetGroupPath(resourceRootPath, category, group)
   fs.mkdirSync(targetDir, { recursive: true })
   return targetDir
 }
@@ -1381,31 +1425,45 @@ ipcMain.handle('library:delete-script-file', async (event, filePath) => {
   }
 })
 
-ipcMain.handle('library:get-node-snippets', async (event, category) => {
+ipcMain.handle('library:get-node-snippets', async (event, category, group) => {
   const categoryKey = nodeSnippetCategories[category] ? category : 'blueprint'
+  const groupKey = normalizeNodeSnippetGroup(categoryKey, group)
   const settings = settingsState()
   if (!settings.resourceRootPath) {
     return { success: false, items: [], libraryRoot: '', message: '请先在设置中选择资源根目录。' }
   }
 
   try {
-    const libraryRoot = ensureNodeSnippetDirectory(settings.resourceRootPath, categoryKey)
-    const entries = await fs.promises.readdir(libraryRoot, { withFileTypes: true })
-    const items = entries
-      .filter((entry) => entry.isFile() && /\.json$/i.test(entry.name))
-      .map((entry) => ({
-        name: path.basename(entry.name, path.extname(entry.name)),
-        fileName: entry.name,
-        path: path.join(libraryRoot, entry.name),
-        category: categoryKey,
-      }))
+    ensureNodeSnippetDirectory(settings.resourceRootPath, categoryKey, groupKey)
+    const categoryRoot = nodeSnippetRootPath(settings.resourceRootPath, categoryKey)
+    const groupRoot = nodeSnippetGroupPath(settings.resourceRootPath, categoryKey, groupKey) || categoryRoot
+    const items = []
+
+    for (const rootDir of [groupRoot]) {
+      const entries = await fs.promises.readdir(rootDir, { withFileTypes: true })
+      entries
+        .filter((entry) => entry.isFile() && /\.json$/i.test(entry.name))
+        .forEach((entry) => {
+          const filePath = path.join(rootDir, entry.name)
+          items.push({
+            name: path.basename(entry.name, path.extname(entry.name)),
+            fileName: entry.name,
+            path: filePath,
+            category: categoryKey,
+            group: groupKey,
+          })
+        })
+    }
+
+    const uniqueItems = Array.from(new Map(items.map((item) => [item.path.toLowerCase(), item])).values())
       .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN', { numeric: true }))
     const label = nodeSnippetCategories[categoryKey].label
+    const groupLabel = nodeSnippetGroupMeta(categoryKey, groupKey).label
     return {
       success: true,
-      items,
-      libraryRoot,
-      message: items.length ? `已读取 ${items.length} 个${label}节点。` : `${label}分类还没有节点片段。`,
+      items: uniqueItems,
+      libraryRoot: categoryRoot,
+      message: uniqueItems.length ? `已读取 ${uniqueItems.length} 个${label}${groupLabel}。` : `${label}${groupLabel}分类还没有节点片段。`,
     }
   } catch (error) {
     return { success: false, items: [], libraryRoot: '', message: `读取节点片段失败：${error.message || '未知错误'}` }
@@ -1427,6 +1485,7 @@ ipcMain.handle('library:read-node-snippet', async (event, filePath) => {
 
 ipcMain.handle('library:save-node-snippet', async (event, data) => {
   const categoryKey = nodeSnippetCategories[data?.category] ? data.category : 'blueprint'
+  const groupKey = normalizeNodeSnippetGroup(categoryKey, data?.group)
   const filePath = data?.filePath || ''
   const content = String(data?.content ?? '')
   const createNew = Boolean(data?.createNew)
@@ -1439,7 +1498,10 @@ ipcMain.handle('library:save-node-snippet', async (event, data) => {
     if (!settings.resourceRootPath) {
       return { success: false, error: '请先在设置中选择资源根目录。' }
     }
-    const parentDir = createNew ? ensureNodeSnippetDirectory(settings.resourceRootPath, categoryKey) : path.dirname(filePath)
+    const targetGroupDir = ensureNodeSnippetDirectory(settings.resourceRootPath, categoryKey, groupKey)
+    const parentDir = createNew
+      ? targetGroupDir
+      : targetGroupDir || path.dirname(filePath)
     const currentName = createNew ? '新建节点' : path.basename(filePath, '.json')
     const nextBaseName = sanitizeResourceName(String(data?.nextName || currentName).replace(/\.json$/i, ''))
     if (!nextBaseName) {
@@ -1452,9 +1514,13 @@ ipcMain.handle('library:save-node-snippet', async (event, data) => {
       return { success: false, error: '同目录下已经存在同名节点。' }
     }
 
-    await fs.promises.writeFile(createNew ? targetPath : filePath, content, 'utf8')
-    if (!createNew && !samePath) {
-      await fs.promises.rename(filePath, targetPath)
+    if (createNew) {
+      await fs.promises.writeFile(targetPath, content, 'utf8')
+    } else if (samePath) {
+      await fs.promises.writeFile(filePath, content, 'utf8')
+    } else {
+      await fs.promises.writeFile(targetPath, content, 'utf8')
+      await fs.promises.rm(filePath, { force: true })
     }
 
     return { success: true, path: targetPath, name: path.basename(targetPath) }
@@ -1490,15 +1556,17 @@ ipcMain.handle('library:copy-node-snippet', async (event, filePath) => {
   }
 })
 
-ipcMain.handle('library:open-node-directory', async (event, category) => {
+ipcMain.handle('library:open-node-directory', async (event, category, group) => {
   const categoryKey = nodeSnippetCategories[category] ? category : 'blueprint'
+  const groupKey = normalizeNodeSnippetGroup(categoryKey, group)
   const settings = settingsState()
   if (!settings.resourceRootPath) {
     return { success: false, error: '请先在设置中选择资源根目录。' }
   }
 
   try {
-    const libraryRoot = ensureNodeSnippetDirectory(settings.resourceRootPath, categoryKey)
+    ensureNodeSnippetDirectory(settings.resourceRootPath, categoryKey, groupKey)
+    const libraryRoot = nodeSnippetRootPath(settings.resourceRootPath, categoryKey)
     shell.openPath(libraryRoot)
     return { success: true, path: libraryRoot }
   } catch (error) {

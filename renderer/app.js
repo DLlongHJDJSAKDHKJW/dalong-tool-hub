@@ -42,6 +42,28 @@ const nodeCategoryOptions = [
   { key: "material", label: "材质" },
   { key: "effect", label: "特效" },
 ];
+const nodeGroupOptions = {
+  blueprint: [
+    { key: "node", label: "节点" },
+    { key: "function", label: "函数" },
+  ],
+  material: [
+    { key: "node", label: "节点" },
+    { key: "function", label: "函数" },
+  ],
+  effect: [
+    { key: "node", label: "节点" },
+  ],
+};
+
+function createNodeLibraryBucket(label = "节点") {
+  return {
+    loading: false,
+    message: `正在读取${label}片段目录...`,
+    libraryRoot: "",
+    items: [],
+  };
+}
 
 const engines = [
   {
@@ -147,11 +169,10 @@ const state = {
     project: 0,
   },
   activeNodeCategory: "blueprint",
+  activeNodeGroup: "node",
   nodeLibrary: {
-    loading: false,
-    message: "正在读取节点片段目录...",
-    libraryRoot: "",
-    items: [],
+    node: createNodeLibraryBucket("节点"),
+    function: createNodeLibraryBucket("函数"),
   },
   previewModal: {
     open: false,
@@ -283,6 +304,7 @@ const state = {
   nodeEditor: {
     open: false,
     category: "blueprint",
+    group: "node",
     name: "",
     filePath: "",
     code: "",
@@ -799,12 +821,15 @@ function nodeEditorMarkup() {
     return "";
   }
 
+  const groupOptions = nodeGroupOptions[state.nodeEditor.category] || nodeGroupOptions.blueprint;
+  const canSaveNode = groupOptions.some((item) => item.key === "node");
+  const canSaveFunction = groupOptions.some((item) => item.key === "function");
+
   return `
     <div class="modal-backdrop" id="node-editor-backdrop">
       <section class="script-editor-modal" role="dialog" aria-modal="true">
         <button class="preview-close" type="button" id="node-editor-close-btn" aria-label="关闭">×</button>
-        <label class="script-editor-name-row">
-          <span>节点名称</span>
+        <label class="script-editor-name-row node-editor-name-row">
           <input
             class="settings-input"
             id="node-editor-name-input"
@@ -816,14 +841,21 @@ function nodeEditorMarkup() {
         </label>
         <div class="script-code-shell node-code-shell">
           <pre class="script-code-highlight" id="node-code-highlight" aria-hidden="true">${escapeHtml(state.nodeEditor.code) || "&nbsp;"}</pre>
-          <textarea class="script-code-editor" id="node-code-editor" spellcheck="false" wrap="soft" ${state.nodeEditor.loading || state.nodeEditor.saving ? "disabled" : ""}>${escapeHtml(state.nodeEditor.code)}</textarea>
+          <textarea class="script-code-editor" id="node-code-editor" spellcheck="false" wrap="soft" placeholder="在这里输入节点或函数内容..." ${state.nodeEditor.loading || state.nodeEditor.saving ? "disabled" : ""}>${escapeHtml(state.nodeEditor.code)}</textarea>
         </div>
         ${state.nodeEditor.message ? `<div class="preview-import-message">${state.nodeEditor.message}</div>` : ""}
         <div class="asset-create-actions">
           <button class="action-btn" type="button" id="node-editor-cancel-btn" ${state.nodeEditor.saving ? "disabled" : ""}>取消</button>
-          <button class="action-btn primary" type="button" id="node-editor-save-btn" ${state.nodeEditor.loading || state.nodeEditor.saving ? "disabled" : ""}>
-            ${state.nodeEditor.saving ? "保存中..." : "保存"}
-          </button>
+          ${canSaveNode ? `
+            <button class="action-btn" type="button" id="node-editor-save-node-btn" ${state.nodeEditor.loading || state.nodeEditor.saving ? "disabled" : ""}>
+              ${state.nodeEditor.saving && state.nodeEditor.group === "node" ? "保存中..." : "保存节点"}
+            </button>
+          ` : ""}
+          ${canSaveFunction ? `
+            <button class="action-btn primary" type="button" id="node-editor-save-function-btn" ${state.nodeEditor.loading || state.nodeEditor.saving ? "disabled" : ""}>
+              ${state.nodeEditor.saving && state.nodeEditor.group === "function" ? "保存中..." : "保存函数"}
+            </button>
+          ` : ""}
         </div>
       </section>
     </div>
@@ -1982,34 +2014,51 @@ async function deleteScriptFile(scriptPath) {
   showToast(result?.error || "删除脚本失败", "error");
 }
 
-async function loadNodeLibrary(category = state.activeNodeCategory) {
-  if (state.nodeLibrary.loading) {
+async function loadNodeLibrarySection(category, group) {
+  const groupLabel = group === "function" ? "函数" : "节点";
+  const currentSection = state.nodeLibrary[group] || createNodeLibraryBucket(groupLabel);
+  if (currentSection.loading) {
     return;
   }
+
   state.nodeLibrary = {
     ...state.nodeLibrary,
-    loading: true,
-    message: "正在读取节点片段...",
+    [group]: {
+      ...currentSection,
+      loading: true,
+      message: `正在读取${groupLabel}片段...`,
+    },
   };
   render();
 
   try {
-    const result = await window.libraryBridge?.getNodeSnippets(category);
+    const result = await window.libraryBridge?.getNodeSnippets(category, group);
     state.nodeLibrary = {
-      loading: false,
-      message: result?.message || "节点片段已读取。",
-      libraryRoot: result?.libraryRoot || "",
-      items: Array.isArray(result?.items) ? result.items : [],
+      ...state.nodeLibrary,
+      [group]: {
+        loading: false,
+        message: result?.message || `${groupLabel}片段已读取。`,
+        libraryRoot: result?.libraryRoot || "",
+        items: Array.isArray(result?.items) ? result.items : [],
+      },
     };
   } catch (error) {
     state.nodeLibrary = {
-      loading: false,
-      message: "节点片段读取失败。",
-      libraryRoot: "",
-      items: [],
+      ...state.nodeLibrary,
+      [group]: {
+        loading: false,
+        message: `${groupLabel}片段读取失败。`,
+        libraryRoot: "",
+        items: [],
+      },
     };
   }
   render();
+}
+
+async function loadNodeLibrary(category = state.activeNodeCategory) {
+  const groups = (nodeGroupOptions[category] || nodeGroupOptions.blueprint).map((item) => item.key);
+  await Promise.all(groups.map((group) => loadNodeLibrarySection(category, group)));
 }
 
 async function switchNodeCategory(category) {
@@ -2017,6 +2066,10 @@ async function switchNodeCategory(category) {
     return;
   }
   state.activeNodeCategory = category;
+  const groupOptions = nodeGroupOptions[category] || nodeGroupOptions.blueprint;
+  if (!groupOptions.some((item) => item.key === state.activeNodeGroup)) {
+    state.activeNodeGroup = groupOptions[0]?.key || "node";
+  }
   await loadNodeLibrary(category);
 }
 
@@ -2032,17 +2085,18 @@ async function copyNodeSnippet(filePath) {
   showToast(result?.error || "复制节点失败", "error");
 }
 
-async function openNodeDirectory() {
-  const result = await window.libraryBridge?.openNodeDirectory(state.activeNodeCategory);
+async function openNodeDirectory(group = state.activeNodeGroup) {
+  const result = await window.libraryBridge?.openNodeDirectory(state.activeNodeCategory, group);
   if (!result?.success) {
     showToast(result?.error || "打开节点目录失败", "error");
   }
 }
 
-function openNewNodeEditor() {
+function openNewNodeEditor(group = state.activeNodeGroup) {
   state.nodeEditor = {
     open: true,
     category: state.activeNodeCategory,
+    group,
     name: "新建节点",
     filePath: "",
     code: "",
@@ -2059,6 +2113,7 @@ async function openNodeEditor(item) {
   state.nodeEditor = {
     open: true,
     category: state.activeNodeCategory,
+    group: item.group || "node",
     name: String(item.name || "节点片段").replace(/\.json$/i, ""),
     filePath: item.path || "",
     code: "",
@@ -2089,6 +2144,7 @@ function closeNodeEditor(force = false) {
   state.nodeEditor = {
     open: false,
     category: state.activeNodeCategory,
+    group: state.activeNodeGroup,
     name: "",
     filePath: "",
     code: "",
@@ -2100,7 +2156,7 @@ function closeNodeEditor(force = false) {
   render();
 }
 
-async function saveNodeEditor() {
+async function saveNodeEditor(targetGroup = state.nodeEditor.group) {
   if (state.nodeEditor.loading || state.nodeEditor.saving) {
     return;
   }
@@ -2110,6 +2166,7 @@ async function saveNodeEditor() {
 
   const result = await window.libraryBridge?.saveNodeSnippet({
     category: state.nodeEditor.category,
+    group: targetGroup,
     filePath: state.nodeEditor.filePath,
     nextName: state.nodeEditor.name,
     content: state.nodeEditor.code,
@@ -2450,64 +2507,84 @@ function scriptActionButton(script) {
 
 function nodePage() {
   const category = nodeCategoryOptions.find((item) => item.key === state.activeNodeCategory) || nodeCategoryOptions[0];
-  const library = state.nodeLibrary;
-  const items = Array.isArray(library.items) ? library.items : [];
+  const groupOptions = nodeGroupOptions[state.activeNodeCategory] || nodeGroupOptions.blueprint;
   const showLibraryRoot = state.settings.showLibraryRootPath !== false;
+  const sections = groupOptions.map((option) => ({
+    ...option,
+    library: state.nodeLibrary[option.key] || createNodeLibraryBucket(option.label),
+  }));
+  const activeGroup = groupOptions.find((item) => item.key === state.activeNodeGroup) || groupOptions[0];
+  const activeLibrary = state.nodeLibrary[activeGroup?.key || "node"] || createNodeLibraryBucket(activeGroup?.label || "节点");
 
   return `
     <section class="page${state.activePage === "node" ? " active" : ""}" data-page-panel="node">
       <div class="content scrollable script-workspace">
-        <section class="script-console-panel node-console-panel">
-          <div class="script-console-top">
-            <div class="script-status-block">
-              <span class="script-status-dot connected"></span>
-              <div>
-                <div class="script-status-title">节点片段库 · ${category.label}</div>
-                <div class="script-status-sub">点击按钮复制节点内容，到虚幻引擎中直接粘贴。</div>
+        <section class="script-console-panel node-console-panel node-panel-shell">
+          <div class="node-panel-top">
+            <div class="node-panel-heading">
+              <div class="script-status-block">
+                <span class="script-status-dot connected"></span>
+                <div>
+                  <div class="script-status-title">节点片段库 · ${category.label}</div>
+                  <div class="script-status-sub">点击下面的按钮即可复制内容，然后到虚幻引擎里直接粘贴。</div>
+                </div>
+              </div>
+              <div class="resource-toolbar-actions node-toolbar-actions">
+                <button class="action-btn primary" type="button" id="node-add-btn" ${activeLibrary.loading ? "disabled" : ""}>添加</button>
+                <button class="action-btn" type="button" id="node-open-dir-btn">打开目录</button>
+                <button class="action-btn" type="button" id="node-refresh-btn" ${activeLibrary.loading ? "disabled" : ""}>${activeLibrary.loading ? "刷新中..." : "刷新"}</button>
               </div>
             </div>
-            <div class="node-category-tabs">
-              ${nodeCategoryOptions.map((option) => `
-                <button class="node-category-tab${option.key === state.activeNodeCategory ? " active" : ""}" type="button" data-node-category="${option.key}">
-                  ${option.label}
-                </button>
-              `).join("")}
-            </div>
-          </div>
-          <div class="script-console-bottom">
-            <div class="resource-toolbar-actions">
-              <button class="action-btn primary" type="button" id="node-add-btn" ${library.loading ? "disabled" : ""}>添加</button>
-              <button class="action-btn" type="button" id="node-open-dir-btn">打开目录</button>
-              <button class="action-btn" type="button" id="node-refresh-btn" ${library.loading ? "disabled" : ""}>${library.loading ? "刷新中..." : "刷新"}</button>
-            </div>
-            ${showLibraryRoot ? `
-              <div class="resource-root-bar">
-                <span>当前读取目录</span>
-                <strong title="${library.libraryRoot || "暂无目录"}">${library.libraryRoot || "暂无目录"}</strong>
+            <div class="node-toolbar-line">
+              <div class="node-tab-row">
+                <span class="node-tab-label">分类</span>
+                <div class="node-category-tabs">
+                  ${nodeCategoryOptions.map((option) => `
+                    <button class="node-category-tab${option.key === state.activeNodeCategory ? " active" : ""}" type="button" data-node-category="${option.key}">
+                      ${option.label}
+                    </button>
+                  `).join("")}
+                </div>
               </div>
-            ` : ""}
+            </div>
           </div>
         </section>
 
-        <div class="script-section-head">
-          <span class="panel-note library-note${library.loading ? " loading" : ""}">${library.loading ? "正在读取节点片段..." : library.message}</span>
-        </div>
-
-        ${items.length ? `
-          <div class="script-button-grid">
-            ${items.map(nodeActionButton).join("")}
+        ${showLibraryRoot ? `
+          <div class="resource-root-bar node-root-bar">
+            <span>当前读取目录</span>
+            <strong title="${activeLibrary.libraryRoot || "暂无目录"}">${activeLibrary.libraryRoot || "暂无目录"}</strong>
           </div>
-        ` : `<div class="script-empty-state">当前“${category.label}”分类还没有节点片段。</div>`}
+        ` : ""}
+
+        <div class="node-dual-grid${sections.length === 1 ? " single" : ""}">
+          ${sections.map((section) => {
+            const library = section.library;
+            const items = Array.isArray(library.items) ? library.items : [];
+            return `
+              <section class="node-section-panel">
+                <div class="node-section-head">
+                  <div class="node-section-title">${section.label}</div>
+                </div>
+                ${items.length ? `
+                  <div class="script-button-grid node-button-grid">
+                    ${items.map((item) => nodeActionButton(item, section.key)).join("")}
+                  </div>
+                ` : `<div class="script-empty-state node-empty-state">当前“${category.label} · ${section.label}”还没有节点片段。</div>`}
+              </section>
+            `;
+          }).join("")}
+        </div>
       </div>
     </section>
   `;
 }
 
-function nodeActionButton(item) {
+function nodeActionButton(item, group = "node") {
   const name = escapeHtml(String(item.name || "未命名节点").replace(/\.json$/i, ""));
   const filePath = escapeHtml(item.path || "");
   return `
-    <button class="script-exec-btn node-copy-btn" type="button" data-node-copy="${filePath}" data-node-name="${name}" title="${filePath}">
+    <button class="script-exec-btn node-copy-btn" type="button" data-node-copy="${filePath}" data-node-name="${name}" data-node-group="${group}" title="${filePath}">
       <span>${name}</span>
     </button>
   `;
@@ -3379,11 +3456,11 @@ function bindEvents() {
   });
 
   document.getElementById("node-add-btn")?.addEventListener("click", () => {
-    openNewNodeEditor();
+    openNewNodeEditor(state.activeNodeGroup);
   });
 
   document.getElementById("node-open-dir-btn")?.addEventListener("click", () => {
-    openNodeDirectory();
+    openNodeDirectory(state.activeNodeGroup);
   });
 
   document.getElementById("node-refresh-btn")?.addEventListener("click", () => {
@@ -3405,6 +3482,7 @@ function bindEvents() {
         item: {
           name: button.dataset.nodeName || "",
           path: button.dataset.nodeCopy || "",
+          group: button.dataset.nodeGroup || "node",
         },
         pageKey: "node-snippet",
       };
@@ -3760,8 +3838,12 @@ function bindEvents() {
     closeNodeEditor();
   });
 
-  document.getElementById("node-editor-save-btn")?.addEventListener("click", () => {
-    saveNodeEditor();
+  document.getElementById("node-editor-save-node-btn")?.addEventListener("click", () => {
+    saveNodeEditor("node");
+  });
+
+  document.getElementById("node-editor-save-function-btn")?.addEventListener("click", () => {
+    saveNodeEditor("function");
   });
 
   document.getElementById("node-editor-backdrop")?.addEventListener("click", (event) => {
